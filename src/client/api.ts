@@ -42,6 +42,19 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+export interface BoardTask {
+  taskId: number;
+  title: string;
+  dueDate: string | null;
+  estimateMinutes: number | null;
+  url: string;
+}
+
+export interface BoardGroup {
+  bucket: string;
+  tasks: BoardTask[];
+}
+
 export interface DuplicateCandidate {
   taskId: number;
   title: string;
@@ -74,11 +87,25 @@ export const api = {
   moveTask: (taskId: number, bucket: string) =>
     post<MovedTaskResult>(`/api/tasks/${taskId}/move`, { bucket }),
   create: (parsed: ParsedTask) => post<CreatedTaskResult>('/api/tasks', parsed),
+  /** Single round trip: duplicate check + create, unless confirmation is needed. */
+  quickCreate: (parsed: ParsedTask, force = false) =>
+    post<
+      | { needsConfirmation: true; duplicates: DuplicateCandidate[]; bucket: { id: number; title: string }; autoRouted: boolean }
+      | { needsConfirmation: false; result: CreatedTaskResult }
+    >('/api/tasks/quick', { ...parsed, force }),
+  board: async (): Promise<BoardGroup[]> => {
+    const res = await fetch('/api/board', { headers: { 'x-app-password': getPassword() } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.groups) ? data.groups : [];
+  },
   health: async (): Promise<{
     ok: boolean;
     passwordRequired: boolean;
     tokenConfigured: boolean;
     doneBucket?: string;
+    targetBucket?: string;
+    defaultAssignee?: string;
   } | null> => {
     try {
       const res = await fetch('/api/health');

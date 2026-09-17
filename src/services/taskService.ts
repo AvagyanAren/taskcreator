@@ -1,4 +1,5 @@
 import { EdgeFocusClient, EdgeFocusError } from '../api/edgefocus.js';
+import { cached, TTL } from './cache.js';
 import {
   descriptionToHtml,
   formatEstimate,
@@ -35,14 +36,23 @@ export class TaskService {
     return `${this.cfg.webUrl}/tasks/${taskId}`;
   }
 
-  /** All Kanban columns of the configured view. */
+  /** All Kanban columns of the configured view (cached — they rarely change). */
   listBuckets(): Promise<EFBucket[]> {
-    return this.client.getBuckets();
+    return cached(`buckets:${this.cfg.projectId}:${this.cfg.kanbanViewId}`, TTL.buckets, () =>
+      this.client.getBuckets()
+    );
+  }
+
+  /** The Kanban view itself, for done_bucket_id (cached). */
+  private getView() {
+    return cached(`view:${this.cfg.projectId}:${this.cfg.kanbanViewId}`, TTL.view, () =>
+      this.client.getView()
+    );
   }
 
   /** Resolves the target bucket by NAME — the id is never hardcoded. */
   async resolveTargetBucket(name = this.cfg.targetBucket): Promise<EFBucket> {
-    const buckets = await this.client.getBuckets();
+    const buckets = await this.listBuckets();
     const wanted = name.trim().toLowerCase();
     const found = buckets.find((b) => (b.title ?? '').trim().toLowerCase() === wanted);
     if (!found) {
@@ -71,7 +81,7 @@ export class TaskService {
     if (buckets.length > 0) return buckets[0];
     const id = task?.bucket_id;
     if (id) {
-      const all = await this.client.getBuckets().catch(() => []);
+      const all = await this.listBuckets().catch(() => []);
       return all.find((b) => b.id === id) ?? null;
     }
     return null;
@@ -157,6 +167,37 @@ export class TaskService {
     return { bucket: await this.resolveTargetBucket(), auto: false as const };
   }
 
+  /**
+   * Current board contents, grouped by column. `expand=buckets` is what makes
+   * this reliable — plain `bucket_id` is often 0 in list responses.
+   */
+  async listBoard(limit = 100): Promise<Array<{ bucket: EFBucket; tasks: EFTask[] }>> {
+    const [buckets, tasks] = await Promise.all([
+      this.listBuckets(),
+      this.client.getViewTasks({
+        viewId: this.cfg.kanbanViewId,
+        perPage: limit,
+        expand: 'buckets'
+      })
+    ]);
+
+    const byBucket = new Map<number, EFTask[]>();
+    for (const task of tasks) {
+      if (task.done) continue;
+      const own = Array.isArray(task.buckets) ? task.buckets : [];
+      const inView = own.find((b) => b.project_view_id === this.cfg.kanbanViewId) ?? own[0];
+      const id = inView?.id ?? task.bucket_id;
+      if (!id) continue;
+      const list = byBucket.get(id) ?? [];
+      list.push(task);
+      byBucket.set(id, list);
+    }
+
+    return buckets
+      .map((bucket) => ({ bucket, tasks: byBucket.get(bucket.id) ?? [] }))
+      .filter((group) => group.tasks.length > 0);
+  }
+
   /** Finds a task by numeric id or by (partial) title inside the project. */
   async findTask(query: string): Promise<EFTask[]> {
     const q = query.trim().replace(/^#/, '');
@@ -178,7 +219,7 @@ export class TaskService {
     const placement = await this.placeInBucket(taskId, target);
     const fresh = await this.client.getTask(taskId);
 
-    const view = await this.client.getView().catch(() => null);
+    const view = await this.getView().catch(() => null);
     const isDoneColumn = view?.done_bucket_id === target.id;
 
     const checks: VerificationCheck[] = [
@@ -295,7 +336,10 @@ export class TaskService {
     const q = query.trim().replace(/^@/, '').toLowerCase();
     if (!q) return { user: null, candidates: [] };
 
-    const users = await this.candidateUsers(q);
+    // The lookup fans out over several endpoints, so the result is cached.
+    const users = await cached(`users:${this.cfg.projectId}:${q}`, TTL.user, () =>
+      this.candidateUsers(q)
+    );
     const norm = (v: string | undefined) => (v ?? '').trim().toLowerCase();
     const words = q.split(/\s+/).filter(Boolean);
 

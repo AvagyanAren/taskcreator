@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { api, getPassword, setPassword, type ApiError, type DuplicateCandidate } from './api.js';
 import { appendHistory, readHistory } from './history.js';
+import { parseTaskInput } from '../parser/taskParser.js';
 import { PasswordGate } from './components/PasswordGate.js';
 import { TaskForm } from './components/TaskForm.js';
 import { TaskPreview } from './components/TaskPreview.js';
 import { TaskResult } from './components/TaskResult.js';
 import { RecentTasks } from './components/RecentTasks.js';
 import { MoveTask } from './components/MoveTask.js';
+import { Board } from './components/Board.js';
 import type { CreatedTaskResult, HistoryEntry, ParsedTask } from '../types/edgefocus.js';
 
 type Stage = 'form' | 'preview' | 'done';
@@ -20,16 +22,21 @@ export default function App() {
   const [duplicates, setDuplicates] = useState<DuplicateCandidate[]>([]);
   const [autoRouted, setAutoRouted] = useState(false);
   const [doneBucket, setDoneBucket] = useState('Выпущено');
+  const [targetBucket, setTargetBucket] = useState('Дизайн');
+  const [defaultAssignee, setDefaultAssignee] = useState('');
   const [result, setResult] = useState<CreatedTaskResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>(() => readHistory());
   const [needsPassword, setNeedsPassword] = useState(false);
   const [gateError, setGateError] = useState<string | null>(null);
+  const [boardKey, setBoardKey] = useState(0);
 
   useEffect(() => {
     api.health().then((h) => {
       if (!h) return;
       if (h.doneBucket) setDoneBucket(h.doneBucket);
+      if (h.targetBucket) setTargetBucket(h.targetBucket);
+      if (h.defaultAssignee) setDefaultAssignee(h.defaultAssignee);
       if (h.passwordRequired && !getPassword()) setNeedsPassword(true);
     });
   }, []);
@@ -56,6 +63,41 @@ export default function App() {
     }
   };
 
+  /**
+   * Ctrl+Enter path: parse locally and create in one request. The server still
+   * checks for duplicates and answers `needsConfirmation` instead of creating
+   * a second copy — in that case we fall back to the preview screen.
+   */
+  const quickCreate = async (text: string) => {
+    const parsedInput = parseTaskInput(text);
+    if (!parsedInput.assignee && defaultAssignee) parsedInput.assignee = defaultAssignee;
+    if (!parsedInput.title) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.quickCreate(parsedInput);
+      if (res.needsConfirmation) {
+        setParsed(parsedInput);
+        setBucket(res.bucket.title);
+        setAutoRouted(res.autoRouted);
+        setDuplicates(res.duplicates);
+        const pre = await api.preflight(parsedInput.title, parsedInput.dueDate ?? null);
+        setBuckets(pre.buckets);
+        setStage('preview');
+        return;
+      }
+      setResult(res.result);
+      setStage('done');
+      setHistory(appendHistory(res.result));
+      setBoardKey((k) => k + 1);
+    } catch (err) {
+      handle(err as ApiError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const confirm = async () => {
     if (!parsed) return;
     setBusy(true);
@@ -65,6 +107,7 @@ export default function App() {
       setResult(created);
       setStage('done');
       setHistory(appendHistory(created));
+      setBoardKey((k) => k + 1);
     } catch (err) {
       handle(err as ApiError);
     } finally {
@@ -131,7 +174,9 @@ export default function App() {
       {stage === 'form' && (
         <TaskForm
           busy={busy}
-          onSubmitText={(text) => runPreview({ text })}
+          bucket={targetBucket}
+          defaultAssignee={defaultAssignee}
+          onSubmitText={(text, quick) => (quick ? quickCreate(text) : runPreview({ text }))}
           onSubmitStructured={(input) => runPreview(input)}
         />
       )}
@@ -147,6 +192,7 @@ export default function App() {
           }}
           autoRouted={autoRouted}
           onAssigneeClear={() => setParsed({ ...parsed, assignee: null })}
+          onChange={(patch) => setParsed({ ...parsed, ...patch })}
           duplicates={duplicates}
           busy={busy}
           onConfirm={confirm}
@@ -155,6 +201,8 @@ export default function App() {
       )}
 
       {stage === 'done' && result && <TaskResult result={result} onReset={reset} />}
+
+      <Board doneBucket={doneBucket} reloadKey={boardKey} />
 
       <MoveTask
         buckets={buckets.length ? buckets.map((b) => b.title) : [doneBucket]}

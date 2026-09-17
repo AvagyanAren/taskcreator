@@ -20,7 +20,11 @@ body {
   font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
 
-main { max-width: 680px; margin: 0 auto; padding: 32px 16px 64px; }
+main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: calc(24px + env(safe-area-inset-top, 0px)) 16px calc(48px + env(safe-area-inset-bottom, 0px));
+}
 header h1 { font-size: 22px; margin: 0 0 20px; }
 
 .card {
@@ -59,6 +63,36 @@ dt { color: var(--muted); font-size: 13px; }
 dd { margin: 0; font-weight: 500; }
 
 .inline-select { width: auto; min-width: 180px; padding: 5px 8px; font-size: 14px; }
+
+.board { margin-top: 14px; }
+.board section { margin-bottom: 18px; }
+.board section:last-child { margin-bottom: 0; }
+.board h3 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .03em; }
+.board .count { color: var(--muted); font-weight: 400; }
+.board ul { list-style: none; margin: 0; padding: 0; }
+.board li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.board li:last-child { border-bottom: none; }
+.board .task { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.board .task a { font-size: 14px; overflow-wrap: anywhere; }
+
+.editable {
+  background: none; border: none; border-bottom: 1px dashed var(--border);
+  padding: 0 0 1px; font: inherit; font-weight: 500; color: var(--text); cursor: text;
+}
+.editable:hover { border-bottom-color: var(--accent); }
+.inline-edit { width: auto; min-width: 200px; padding: 4px 8px; font-size: 14px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip {
+  background: #eef2f8; border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; color: var(--text);
+}
+.chip.title { font-weight: 500; max-width: 100%; overflow-wrap: anywhere; }
+.chip.muted { color: var(--muted); background: transparent; border-style: dashed; }
+kbd {
+  background: #eef2f8; border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 4px; padding: 0 4px; font-size: 11px; font-family: inherit;
+}
 
 .gate { max-width: 360px; }
 

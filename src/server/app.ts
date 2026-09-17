@@ -55,7 +55,8 @@ app.get('/api/health', (_req, res) => {
     projectId: config.projectId,
     kanbanViewId: config.kanbanViewId,
     targetBucket: config.targetBucket,
-    doneBucket: config.doneBucket
+    doneBucket: config.doneBucket,
+    defaultAssignee: config.defaultAssignee
   });
 });
 
@@ -141,6 +142,28 @@ app.post('/api/tasks', async (req, res) => {
 });
 
 /** Search existing tasks by id or title. */
+  /** Current board: open tasks grouped by column. */
+  app.get('/api/board', async (_req, res) => {
+    try {
+      const groups = await service().listBoard();
+      res.json({
+        doneBucket: config.doneBucket,
+        groups: groups.map((g) => ({
+          bucket: g.bucket.title,
+          tasks: g.tasks.map((t) => ({
+            taskId: t.id,
+            title: t.title,
+            dueDate: t.end_date ?? null,
+            estimateMinutes: t.time_estimate ?? null,
+            url: `${config.webUrl}/tasks/${t.id}`
+          }))
+        }))
+      });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
 app.post('/api/tasks/search', async (req, res) => {
   try {
     const q = String(req.body?.query ?? '').trim();
@@ -173,6 +196,48 @@ app.post('/api/tasks/:id/move', async (req, res) => {
     sendError(res, err);
   }
 });
+
+  /**
+   * One-shot create: resolves the column, checks for duplicates and creates
+   * the task in a single round trip. If a possible duplicate turns up, nothing
+   * is created — the client is asked to confirm instead.
+   */
+  app.post('/api/tasks/quick', async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const parsed: ParsedTask = {
+        title: String(body.title ?? '').trim(),
+        dueDate: body.dueDate ? String(body.dueDate) : null,
+        estimateMinutes:
+          body.estimateMinutes === null || body.estimateMinutes === undefined
+            ? null
+            : Number(body.estimateMinutes),
+        assignee: body.assignee ? String(body.assignee) : null,
+        bucket: body.bucket ? String(body.bucket) : null,
+        description: body.description ? String(body.description) : null
+      };
+      if (!parsed.title) {
+        return res.status(400).json({ error: 'Укажите название задачи.', kind: 'validation' });
+      }
+
+      const svc = service();
+      const duplicates = await svc.findPossibleDuplicates(parsed.title);
+      if (duplicates.length > 0 && !body.force) {
+        const decided = await svc.decideBucket(parsed);
+        return res.json({
+          needsConfirmation: true,
+          duplicates,
+          bucket: { id: decided.bucket.id, title: decided.bucket.title },
+          autoRouted: decided.auto
+        });
+      }
+
+      const result = await svc.createTask(parsed);
+      res.json({ needsConfirmation: false, result });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
 
 /** Diagnostics: who does EdgeFocus return for this name? */
 app.post('/api/users/lookup', async (req, res) => {

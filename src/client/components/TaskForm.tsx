@@ -1,8 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { parseTaskInput } from '../../parser/taskParser.js';
+import { ParsePreviewChips } from './ParsePreviewChips.js';
 
 interface Props {
   busy: boolean;
-  onSubmitText: (text: string) => void;
+  bucket: string;
+  defaultAssignee: string;
+  onSubmitText: (text: string, quick?: boolean) => void;
   onSubmitStructured: (input: {
     title: string;
     date: string;
@@ -13,7 +17,13 @@ interface Props {
 
 const ESTIMATES = ['', '5m', '15m', '30m', '45m', '1h', '1h 30m', '2h', '3h', '4h', '6h', '8h'];
 
-export function TaskForm({ busy, onSubmitText, onSubmitStructured }: Props) {
+export function TaskForm({
+  busy,
+  bucket,
+  defaultAssignee,
+  onSubmitText,
+  onSubmitStructured
+}: Props) {
   const [mode, setMode] = useState<'nl' | 'fields'>('nl');
   const [text, setText] = useState('');
   const [title, setTitle] = useState('');
@@ -21,6 +31,14 @@ export function TaskForm({ busy, onSubmitText, onSubmitStructured }: Props) {
   const [estimate, setEstimate] = useState('');
   const [customEstimate, setCustomEstimate] = useState('');
   const [description, setDescription] = useState('');
+
+  // The parser is plain TypeScript, so it runs in the browser too: the preview
+  // updates as you type, with no request to the server.
+  const live = useMemo(() => {
+    const parsed = parseTaskInput(text);
+    if (!parsed.assignee && defaultAssignee) parsed.assignee = defaultAssignee;
+    return parsed;
+  }, [text, defaultAssignee]);
 
   return (
     <div className="card">
@@ -50,15 +68,18 @@ export function TaskForm({ busy, onSubmitText, onSubmitStructured }: Props) {
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && text.trim()) {
                 e.preventDefault();
-                onSubmitText(text);
+                onSubmitText(text, true);
               }
             }}
           />
+          <ParsePreviewChips parsed={live} bucket={bucket} />
           <p className="hint">
             Дата и estimate распознаются автоматически: «завтра», «25 сентября», «20.09», «2h»,
             «1.5 часа», «30 мин». Исполнитель — «@aren» или «assign Aren».
             <br />
             Описание — со второй строки (Shift+Enter) или после слова «описание:».
+            <br />
+            <kbd>Ctrl</kbd> + <kbd>Enter</kbd> — создать сразу, минуя подтверждение.
           </p>
           <button className="primary" type="submit" disabled={busy || !text.trim()}>
             Создать задачу

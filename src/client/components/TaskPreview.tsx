@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { parseDateInput, parseEstimate } from '../../parser/taskParser.js';
 import type { ParsedTask } from '../../types/edgefocus.js';
 import type { DuplicateCandidate } from '../api.js';
 import { formatDay, formatEstimate } from '../format.js';
@@ -9,6 +11,7 @@ interface Props {
   onBucketChange: (title: string) => void;
   autoRouted: boolean;
   onAssigneeClear: () => void;
+  onChange: (patch: Partial<ParsedTask>) => void;
   duplicates: DuplicateCandidate[];
   busy: boolean;
   onConfirm: () => void;
@@ -22,11 +25,60 @@ export function TaskPreview({
   onBucketChange,
   autoRouted,
   onAssigneeClear,
+  onChange,
   duplicates,
   busy,
   onConfirm,
   onCancel
 }: Props) {
+  const [editing, setEditing] = useState<'date' | 'estimate' | null>(null);
+  const [draft, setDraft] = useState('');
+
+  const commit = (field: 'date' | 'estimate') => {
+    const value = draft.trim();
+    if (field === 'date') {
+      onChange({ dueDate: value ? parseDateInput(value) : null });
+    } else {
+      onChange({ estimateMinutes: value ? parseEstimate(value) : null });
+    }
+    setEditing(null);
+    setDraft('');
+  };
+
+  const editable = (field: 'date' | 'estimate', display: string) =>
+    editing === field ? (
+      <input
+        className="inline-edit"
+        autoFocus
+        value={draft}
+        placeholder={field === 'date' ? '25 сентября / 20.09 / завтра' : '2h / 90m / 1.5h'}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => commit(field)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit(field);
+          }
+          if (e.key === 'Escape') {
+            setEditing(null);
+            setDraft('');
+          }
+        }}
+      />
+    ) : (
+      <button
+        className="editable"
+        disabled={busy}
+        onClick={() => {
+          setEditing(field);
+          setDraft('');
+        }}
+        title="Нажмите, чтобы изменить"
+      >
+        {display}
+      </button>
+    );
+
   return (
     <div className="card preview">
       <h2>Проверьте данные</h2>
@@ -40,9 +92,9 @@ export function TaskPreview({
           </>
         )}
         <dt>Date</dt>
-        <dd>{formatDay(parsed.dueDate)}</dd>
+        <dd>{editable('date', formatDay(parsed.dueDate))}</dd>
         <dt>Estimate</dt>
-        <dd>{formatEstimate(parsed.estimateMinutes)}</dd>
+        <dd>{editable('estimate', formatEstimate(parsed.estimateMinutes))}</dd>
         <dt>Колонка</dt>
         <dd>
           {buckets.length > 1 ? (

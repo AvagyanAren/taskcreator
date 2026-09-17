@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+data/history.json
+*.log
+.DS_Store
+.vercel
+dist/public

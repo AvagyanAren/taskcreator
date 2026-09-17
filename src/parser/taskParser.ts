@@ -67,9 +67,16 @@ function daysInMonth(year: number, month: number): number {
 }
 
 /**
+ * How far back a bare "10 сентября" is still read as this year's date rather
+ * than next year's. Recent past dates are normal here — a task finished
+ * yesterday goes straight to the done column.
+ */
+const PAST_TOLERANCE_DAYS = 90;
+
+/**
  * Builds a date from day/month with an optional year.
- * When the year is omitted we use the current year and roll forward
- * to the next one if that day has already passed.
+ * When the year is omitted we use the current year; a day that passed more
+ * than PAST_TOLERANCE_DAYS ago is read as next year instead.
  */
 function resolveDayMonth(
   day: number,
@@ -82,7 +89,8 @@ function resolveDayMonth(
   if (day > daysInMonth(y, month)) return null;
   if (year === undefined) {
     const candidate = new Date(y, month - 1, day);
-    if (candidate.getTime() < startOfDay(now).getTime()) {
+    const daysAgo = (startOfDay(now).getTime() - candidate.getTime()) / 86400000;
+    if (daysAgo > PAST_TOLERANCE_DAYS) {
       y += 1;
       if (day > daysInMonth(y, month)) return null;
     }

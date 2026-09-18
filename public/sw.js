@@ -2,7 +2,7 @@
  * Cache-first for the app shell, network-only for the API.
  * Task creation must never be served from a cache.
  */
-const CACHE = 'edgefocus-shell-v1';
+const CACHE = 'edgefocus-shell-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -28,9 +28,12 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return; // always live
 
-  event.respondWith(
-    caches.match(request).then((hit) => {
-      const fromNetwork = fetch(request)
+  // The HTML shell points at hashed asset files, so it must never be stale:
+  // network first, cache only as an offline fallback.
+  const isDocument = request.mode === 'navigate' || url.pathname === '/';
+  if (isDocument) {
+    event.respondWith(
+      fetch(request)
         .then((response) => {
           if (response.ok) {
             const copy = response.clone();
@@ -38,8 +41,23 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => hit);
-      return hit || fromNetwork;
-    })
+        .catch(() => caches.match(request).then((hit) => hit || caches.match('/')))
+    );
+    return;
+  }
+
+  // Hashed assets never change under the same URL: cache first, no revalidation.
+  event.respondWith(
+    caches.match(request).then(
+      (hit) =>
+        hit ||
+        fetch(request).then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE).then((cache) => cache.put(request, copy));
+          }
+          return response;
+        })
+    )
   );
 });

@@ -5,7 +5,11 @@ export function PasswordGate({ onSubmit, error }: { onSubmit: (value: string) =>
   return (
     <div className="card gate">
       <h2>Вход</h2>
-      <p className="hint">Приложение создаёт задачи в рабочем проекте, поэтому закрыто паролем.</p>
+      <p className="hint">
+        Приложение создаёт задачи в рабочем проекте, поэтому закрыто паролем.
+        Это значение переменной <code>APP_PASSWORD</code> в настройках Vercel.
+      </p>
+      <p className="hint">Введённая задача сохранена — после входа вы вернётесь к ней.</p>
       <form
         onSubmit={(e) => {
           e.preventDefault();

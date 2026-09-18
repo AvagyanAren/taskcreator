@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { readDraft, saveDraft } from '../draft.js';
 import { parseTaskInput } from '../../parser/taskParser.js';
 import { ParsePreviewChips } from './ParsePreviewChips.js';
 
@@ -24,13 +25,19 @@ export function TaskForm({
   onSubmitText,
   onSubmitStructured
 }: Props) {
-  const [mode, setMode] = useState<'nl' | 'fields'>('nl');
-  const [text, setText] = useState('');
-  const [title, setTitle] = useState('');
-  const [date, setDate] = useState('');
-  const [estimate, setEstimate] = useState('');
+  const initial = useMemo(() => readDraft(), []);
+  const [mode, setMode] = useState<'nl' | 'fields'>(initial.mode);
+  const [text, setText] = useState(initial.text);
+  const [title, setTitle] = useState(initial.title);
+  const [date, setDate] = useState(initial.date);
+  const [estimate, setEstimate] = useState(initial.estimate);
   const [customEstimate, setCustomEstimate] = useState('');
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(initial.description);
+
+  // Persist the draft so a password prompt or a reload never eats the input.
+  useEffect(() => {
+    saveDraft({ text, title, date, estimate, description, mode });
+  }, [text, title, date, estimate, description, mode]);
 
   // The parser is plain TypeScript, so it runs in the browser too: the preview
   // updates as you type, with no request to the server.

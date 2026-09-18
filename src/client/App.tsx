@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, getPassword, setPassword, type ApiError, type DuplicateCandidate } from './api.js';
 import { appendHistory, readHistory } from './history.js';
+import { clearDraft } from './draft.js';
 import { parseTaskInput } from '../parser/taskParser.js';
 import { PasswordGate } from './components/PasswordGate.js';
 import { TaskForm } from './components/TaskForm.js';
@@ -30,6 +31,7 @@ export default function App() {
   const [needsPassword, setNeedsPassword] = useState(false);
   const [gateError, setGateError] = useState<string | null>(null);
   const [boardKey, setBoardKey] = useState(0);
+  const [retry, setRetry] = useState<(() => void) | null>(null);
 
   useEffect(() => {
     api.health().then((h) => {
@@ -91,8 +93,9 @@ export default function App() {
       setStage('done');
       setHistory(appendHistory(res.result));
       setBoardKey((k) => k + 1);
+      clearDraft();
     } catch (err) {
-      handle(err as ApiError);
+      handle(err as ApiError, () => void quickCreate(text));
     } finally {
       setBusy(false);
     }
@@ -108,6 +111,7 @@ export default function App() {
       setStage('done');
       setHistory(appendHistory(created));
       setBoardKey((k) => k + 1);
+      clearDraft();
     } catch (err) {
       handle(err as ApiError);
     } finally {
@@ -116,10 +120,11 @@ export default function App() {
   };
 
   /** A 401 from the password gate sends the user back to the login screen. */
-  const handle = (err: ApiError) => {
+  const handle = (err: ApiError, retryAction?: () => void) => {
     if (err?.kind === 'password') {
       setNeedsPassword(true);
-      setGateError('Неверный пароль.');
+      setGateError(getPassword() ? 'Неверный пароль.' : null);
+      setRetry(() => retryAction ?? null);
       setError(null);
       return;
     }
@@ -147,6 +152,10 @@ export default function App() {
             setPassword(value);
             setNeedsPassword(false);
             setGateError(null);
+            // Continue what the person was doing instead of making them retype it.
+            const action = retry;
+            setRetry(null);
+            if (action) action();
           }}
         />
       </main>

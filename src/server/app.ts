@@ -6,6 +6,7 @@ import { ConfigError, loadConfig } from '../config/index.js';
 import { parseDateInput, parseEstimate, parseTaskInput } from '../parser/taskParser.js';
 import { TaskService } from '../services/taskService.js';
 import type { ParsedTask } from '../types/edgefocus.js';
+import { passwordMatches } from './password.js';
 
 /**
  * Optional shared-password gate. Without APP_PASSWORD the app stays open,
@@ -17,7 +18,7 @@ function requirePassword(req: express.Request, res: express.Response, next: expr
   if (!APP_PASSWORD) return next();
   if (req.path === '/api/health') return next();
   const supplied = String(req.header('x-app-password') || '');
-  if (supplied && supplied === APP_PASSWORD) return next();
+  if (passwordMatches(APP_PASSWORD, supplied)) return next();
   return res.status(401).json({ error: 'Требуется пароль.', kind: 'password' });
 }
 

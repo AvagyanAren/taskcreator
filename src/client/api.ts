@@ -11,6 +11,20 @@ export function getPassword(): string {
   }
 }
 
+/**
+ * Headers are limited to ISO-8859-1: a Cyrillic password would make fetch()
+ * throw before the request is even sent. Percent-encoding keeps it ASCII.
+ */
+function passwordHeader(): string {
+  const value = getPassword();
+  if (!value) return '';
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return '';
+  }
+}
+
 export function setPassword(value: string): void {
   try {
     if (value) localStorage.setItem(PASSWORD_KEY, value);
@@ -31,7 +45,7 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-app-password': getPassword() },
+      headers: { 'Content-Type': 'application/json', 'x-app-password': passwordHeader() },
       body: JSON.stringify(body)
     });
   } catch (err) {
@@ -83,7 +97,7 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 async function get<T>(url: string): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { headers: { 'x-app-password': getPassword() } });
+    res = await fetch(url, { headers: { 'x-app-password': passwordHeader() } });
   } catch (err) {
     throw {
       error: navigator.onLine

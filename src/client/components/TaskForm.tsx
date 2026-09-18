@@ -78,15 +78,14 @@ export function TaskForm({
         >
           <div className="label-row">
             <label htmlFor="nl">Что нужно сделать?</label>
-            {speech.supported && (
+            {speech.supported && !speech.listening && (
               <button
                 type="button"
-                className={speech.listening ? 'mic listening' : 'mic'}
+                className="mic"
                 onClick={speech.toggle}
-                title={speech.listening ? 'Остановить' : 'Надиктовать задачу'}
-                aria-label={speech.listening ? 'Остановить запись' : 'Надиктовать задачу'}
+                aria-label="Надиктовать задачу"
               >
-                {speech.listening ? '● запись' : '🎤 голосом'}
+                🎤 голосом
               </button>
             )}
           </div>
@@ -104,6 +103,15 @@ export function TaskForm({
               }
             }}
           />
+          {speech.listening && (
+            <div className="recording" role="status">
+              <span className="dot" aria-hidden="true" />
+              <span>Говорите…</span>
+              <button type="button" className="ghost small" onClick={speech.stop}>
+                Стоп
+              </button>
+            </div>
+          )}
           {speech.error && <p className="hint warn">{speech.error}</p>}
           <ParsePreviewChips parsed={live} bucket={bucket} />
           <p className="hint">

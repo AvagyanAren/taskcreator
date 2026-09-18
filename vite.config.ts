@@ -11,5 +11,11 @@ export default defineConfig({
     }
   },
   build: { outDir: 'dist/public' },
-  test: { environment: 'node', include: ['src/**/*.test.ts'] }
+  test: {
+    include: ['src/**/*.test.ts'],
+    environmentMatchGlobs: [
+      ['src/client/**', 'jsdom'],
+      ['**', 'node']
+    ]
+  }
 } as any);

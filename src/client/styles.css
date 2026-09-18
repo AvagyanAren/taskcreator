@@ -166,9 +166,25 @@ a { color: var(--accent); }
 .label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .mic {
   background: none; border: 1px solid var(--border); border-radius: 999px;
-  padding: 3px 12px; font-size: 12px; color: var(--muted); margin: 12px 0 6px;
+  padding: 6px 14px; font-size: 13px; color: var(--muted); margin: 8px 0 6px;
+  min-height: 34px;
 }
-.mic.listening { border-color: var(--err); color: var(--err); }
+
+/* Recording state is a separate row with its own stop button: on a phone the
+   tiny toggle was easy to miss, and a stuck session had no way out. */
+.recording {
+  display: flex; align-items: center; gap: 10px; margin-top: 12px;
+  padding: 10px 12px; border-radius: 10px; font-size: 14px;
+  border: 1px solid color-mix(in srgb, var(--err) 40%, var(--border));
+  background: color-mix(in srgb, var(--err) 8%, var(--card));
+}
+.recording .dot {
+  width: 10px; height: 10px; border-radius: 50%; background: var(--err);
+  animation: pulse 1.2s ease-in-out infinite; flex: none;
+}
+.recording button { margin-top: 0; margin-left: auto; min-height: 36px; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .recording .dot { animation: none; } }
 .hint.warn { color: var(--warn); }
 
 .toast {

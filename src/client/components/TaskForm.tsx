@@ -13,6 +13,9 @@ interface Props {
     date: string;
     estimate: string;
     description: string;
+    startTime: string;
+    endTime: string;
+    percentDone: string;
   }) => void;
 }
 
@@ -33,6 +36,9 @@ export function TaskForm({
   const [estimate, setEstimate] = useState(initial.estimate);
   const [customEstimate, setCustomEstimate] = useState('');
   const [description, setDescription] = useState(initial.description);
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const [percentDone, setPercentDone] = useState('');
 
   // Persist the draft so a password prompt or a reload never eats the input.
   useEffect(() => {
@@ -84,6 +90,9 @@ export function TaskForm({
             Дата и estimate распознаются автоматически: «завтра», «25 сентября», «20.09», «2h»,
             «1.5 часа», «30 мин». Исполнитель — «@aren» или «assign Aren».
             <br />
+            Время — «с 10:00 до 18:00» или «14:00». Прогресс — «50%».
+            Диапазон дней — «с 18.09 по 25.09».
+            <br />
             Описание — со второй строки (Shift+Enter) или после слова «описание:».
             <br />
             <kbd>Ctrl</kbd> + <kbd>Enter</kbd> — создать сразу, минуя подтверждение.
@@ -101,7 +110,10 @@ export function TaskForm({
                 title,
                 date,
                 estimate: estimate === 'custom' ? customEstimate : estimate,
-                description
+                description,
+                startTime,
+                endTime,
+                percentDone
               });
             }
           }}
@@ -123,6 +135,33 @@ export function TaskForm({
             value={date}
             placeholder="25.09.2026 / 25 сентября / завтра"
             onChange={(e) => setDate(e.target.value)}
+          />
+
+          <div className="row-fields">
+            <div>
+              <label htmlFor="from">Начало</label>
+              <input
+                id="from"
+                type="time"
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="to">Окончание</label>
+              <input id="to" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            </div>
+          </div>
+
+          <label htmlFor="progress">Прогресс: {percentDone || 0}%</label>
+          <input
+            id="progress"
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={percentDone || 0}
+            onChange={(e) => setPercentDone(e.target.value)}
           />
 
           <label htmlFor="estimate">Estimate</label>

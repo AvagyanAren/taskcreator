@@ -18,3 +18,10 @@ export function formatEstimate(minutes: number | null): string {
   if (h) return `${h}ч`;
   return `${m}м`;
 }
+
+export function formatTimeRange(start?: string | null, end?: string | null): string | null {
+  if (start && end) return `${start} – ${end}`;
+  if (end) return `до ${end}`;
+  if (start) return `с ${start}`;
+  return null;
+}

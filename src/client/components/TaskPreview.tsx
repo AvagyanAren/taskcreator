@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { parseDateInput, parseEstimate } from '../../parser/taskParser.js';
 import type { ParsedTask } from '../../types/edgefocus.js';
 import type { DuplicateCandidate } from '../api.js';
-import { formatDay, formatEstimate } from '../format.js';
+import { formatDay, formatEstimate, formatTimeRange } from '../format.js';
 
 interface Props {
   parsed: ParsedTask;
@@ -93,8 +93,26 @@ export function TaskPreview({
         )}
         <dt>Date</dt>
         <dd>{editable('date', formatDay(parsed.dueDate))}</dd>
+        {parsed.startDate && parsed.startDate !== parsed.dueDate && (
+          <>
+            <dt>Начало</dt>
+            <dd>{formatDay(parsed.startDate)}</dd>
+          </>
+        )}
+        {formatTimeRange(parsed.startTime, parsed.endTime) && (
+          <>
+            <dt>Время</dt>
+            <dd>{formatTimeRange(parsed.startTime, parsed.endTime)}</dd>
+          </>
+        )}
         <dt>Estimate</dt>
         <dd>{editable('estimate', formatEstimate(parsed.estimateMinutes))}</dd>
+        {parsed.percentDone !== null && parsed.percentDone !== undefined && (
+          <>
+            <dt>Прогресс</dt>
+            <dd>{parsed.percentDone}%</dd>
+          </>
+        )}
         <dt>Колонка</dt>
         <dd>
           {buckets.length > 1 ? (

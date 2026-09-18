@@ -139,6 +139,13 @@ export interface BoardTask {
   url: string;
 }
 
+export interface BoardStats {
+  received: number;
+  open: number;
+  resolved: number;
+  source: string;
+}
+
 export interface BoardGroup {
   bucket: string;
   tasks: BoardTask[];
@@ -150,6 +157,11 @@ export interface DuplicateCandidate {
   dueDate: string | null;
   created: string | null;
   url: string;
+}
+
+/** The server builds timestamps from local wall-clock times, so it needs this. */
+function withTz(parsed: ParsedTask) {
+  return { ...parsed, tzOffsetMinutes: new Date().getTimezoneOffset() };
 }
 
 export const api = {
@@ -175,17 +187,18 @@ export const api = {
     ),
   moveTask: (taskId: number, bucket: string) =>
     post<MovedTaskResult>(`/api/tasks/${taskId}/move`, { bucket }),
-  create: (parsed: ParsedTask) => post<CreatedTaskResult>('/api/tasks', parsed),
+  create: (parsed: ParsedTask) => post<CreatedTaskResult>('/api/tasks', withTz(parsed)),
   /** Single round trip: duplicate check + create, unless confirmation is needed. */
   quickCreate: (parsed: ParsedTask, force = false) =>
     post<
       | { needsConfirmation: true; duplicates: DuplicateCandidate[]; bucket: { id: number; title: string }; autoRouted: boolean }
       | { needsConfirmation: false; result: CreatedTaskResult }
-    >('/api/tasks/quick', { ...parsed, force }),
-  board: async (): Promise<BoardGroup[]> => {
-    const data = await get<{ groups?: BoardGroup[] }>('/api/board');
-    return Array.isArray(data.groups) ? data.groups : [];
-  },
+    >('/api/tasks/quick', { ...withTz(parsed), force }),
+  board: () =>
+    get<{ groups?: BoardGroup[]; stats?: BoardStats }>('/api/board').then((data) => ({
+      groups: Array.isArray(data.groups) ? data.groups : [],
+      stats: data.stats
+    })),
   diag: () => get<{ ok: boolean; totalMs: number; steps: unknown[] }>('/api/diag'),
   health: async (): Promise<{
     ok: boolean;

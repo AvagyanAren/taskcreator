@@ -43,7 +43,16 @@ export default function App() {
     });
   }, []);
 
-  const runPreview = async (input: { text?: string; title?: string; date?: string; estimate?: string }) => {
+  const runPreview = async (input: {
+    text?: string;
+    title?: string;
+    date?: string;
+    estimate?: string;
+    description?: string;
+    startTime?: string;
+    endTime?: string;
+    percentDone?: string;
+  }) => {
     setBusy(true);
     setError(null);
     try {

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, type ApiError, type BoardGroup } from '../api.js';
+import { api, type ApiError, type BoardGroup, type BoardStats } from '../api.js';
 import { formatDay, formatEstimate } from '../format.js';
 
 /** Open tasks straight from the Kanban board, with one-click completion. */
 export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey: number }) {
   const [groups, setGroups] = useState<BoardGroup[]>([]);
+  const [stats, setStats] = useState<BoardStats | null>(null);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [movingId, setMovingId] = useState<number | null>(null);
@@ -14,7 +15,9 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
     setLoading(true);
     setError(null);
     try {
-      setGroups(await api.board());
+      const data = await api.board();
+      setGroups(data.groups);
+      setStats(data.stats ?? null);
     } catch (err) {
       setError((err as ApiError) ?? { error: 'Не удалось загрузить доску.' });
     } finally {
@@ -61,7 +64,17 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
               )}
             </div>
           )}
-          {!loading && !error && groups.length === 0 && <p className="hint">Открытых задач нет.</p>}
+          {!loading && !error && groups.length === 0 && (
+            <>
+              <p className="hint">Открытых задач нет.</p>
+              {stats && (
+                <p className="hint">
+                  EdgeFocus вернул задач: {stats.received}, из них открытых: {stats.open},
+                  с определённой колонкой: {stats.resolved}.
+                </p>
+              )}
+            </>
+          )}
 
           {groups.map((group) => (
             <section key={group.bucket}>

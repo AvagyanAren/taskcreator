@@ -1,5 +1,5 @@
 import type { CreatedTaskResult } from '../../types/edgefocus.js';
-import { formatDay, formatEstimate } from '../format.js';
+import { formatDay, formatEstimate, formatTimeRange } from '../format.js';
 
 export function TaskResult({ result, onReset }: { result: CreatedTaskResult; onReset: () => void }) {
   return (
@@ -10,8 +10,20 @@ export function TaskResult({ result, onReset }: { result: CreatedTaskResult; onR
         <dd>{result.title}</dd>
         <dt>Date</dt>
         <dd>{formatDay(result.dueDate)}</dd>
+        {formatTimeRange(result.startTime, result.endTime) && (
+          <>
+            <dt>Время</dt>
+            <dd>{formatTimeRange(result.startTime, result.endTime)}</dd>
+          </>
+        )}
         <dt>Estimate</dt>
         <dd>{formatEstimate(result.estimateMinutes)}</dd>
+        {result.percentDone !== null && result.percentDone !== undefined && (
+          <>
+            <dt>Прогресс</dt>
+            <dd>{result.percentDone}%</dd>
+          </>
+        )}
         <dt>Bucket</dt>
         <dd>{result.bucket ?? '—'}</dd>
         {result.assignees.length > 0 && (

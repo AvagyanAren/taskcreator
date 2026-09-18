@@ -1,5 +1,5 @@
 import type { ParsedTask } from '../../types/edgefocus.js';
-import { formatDay, formatEstimate } from '../format.js';
+import { formatDay, formatEstimate, formatTimeRange } from '../format.js';
 
 /** Live feedback under the input: what the parser understood, as you type. */
 export function ParsePreviewChips({ parsed, bucket }: { parsed: ParsedTask; bucket: string }) {
@@ -14,6 +14,12 @@ export function ParsePreviewChips({ parsed, bucket }: { parsed: ParsedTask; buck
         {parsed.estimateMinutes ? formatEstimate(parsed.estimateMinutes) : 'без estimate'}
       </span>
       <span className="chip">{bucket}</span>
+      {formatTimeRange(parsed.startTime, parsed.endTime) && (
+        <span className="chip">{formatTimeRange(parsed.startTime, parsed.endTime)}</span>
+      )}
+      {parsed.percentDone !== null && parsed.percentDone !== undefined && (
+        <span className="chip">{parsed.percentDone}%</span>
+      )}
       {parsed.assignee && <span className="chip">{parsed.assignee}</span>}
       {parsed.description && <span className="chip">описание +</span>}
     </div>

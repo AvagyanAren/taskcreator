@@ -8,6 +8,27 @@ import { TaskService } from '../services/taskService.js';
 import type { ParsedTask } from '../types/edgefocus.js';
 import { passwordMatches } from './password.js';
 
+/** Reads a task payload sent by the client, including its timezone offset. */
+function readTaskBody(body: Record<string, unknown>): { parsed: ParsedTask; tz: number } {
+  const num = (v: unknown): number | null =>
+    v === null || v === undefined || v === '' ? null : Number(v);
+  return {
+    parsed: {
+      title: String(body.title ?? '').trim(),
+      dueDate: body.dueDate ? String(body.dueDate) : null,
+      startDate: body.startDate ? String(body.startDate) : null,
+      startTime: body.startTime ? String(body.startTime) : null,
+      endTime: body.endTime ? String(body.endTime) : null,
+      percentDone: num(body.percentDone),
+      estimateMinutes: num(body.estimateMinutes),
+      assignee: body.assignee ? String(body.assignee) : null,
+      bucket: body.bucket ? String(body.bucket) : null,
+      description: body.description ? String(body.description) : null
+    },
+    tz: Number.isFinite(Number(body.tzOffsetMinutes)) ? Number(body.tzOffsetMinutes) : 0
+  };
+}
+
 /**
  * Optional shared-password gate. Without APP_PASSWORD the app stays open,
  * which is fine locally but must never be the case on a public URL.
@@ -97,6 +118,16 @@ app.post('/api/parse', (req, res) => {
     if (!parsed.assignee && config.defaultAssignee) {
       parsed.assignee = config.defaultAssignee;
     }
+    if (typeof req.body?.startTime === 'string' && req.body.startTime.trim()) {
+      parsed.startTime = req.body.startTime.trim();
+    }
+    if (typeof req.body?.endTime === 'string' && req.body.endTime.trim()) {
+      parsed.endTime = req.body.endTime.trim();
+    }
+    if (req.body?.percentDone !== undefined && req.body.percentDone !== null && req.body.percentDone !== '') {
+      const value = Number(req.body.percentDone);
+      if (Number.isFinite(value)) parsed.percentDone = Math.max(0, Math.min(100, value));
+    }
     res.json({ parsed, targetBucket: config.targetBucket });
   } catch (err) {
     sendError(res, err);
@@ -133,22 +164,11 @@ app.post('/api/preflight', async (req, res) => {
 /** Create + move + verify. */
 app.post('/api/tasks', async (req, res) => {
   try {
-    const body = req.body ?? {};
-    const parsed: ParsedTask = {
-      title: String(body.title ?? '').trim(),
-      dueDate: body.dueDate ? String(body.dueDate) : null,
-      estimateMinutes:
-        body.estimateMinutes === null || body.estimateMinutes === undefined
-          ? null
-          : Number(body.estimateMinutes),
-      assignee: body.assignee ? String(body.assignee) : null,
-      bucket: body.bucket ? String(body.bucket) : null,
-      description: body.description ? String(body.description) : null
-    };
+    const { parsed, tz } = readTaskBody((req.body ?? {}) as Record<string, unknown>);
     if (!parsed.title) {
       return res.status(400).json({ error: 'Укажите название задачи.', kind: 'validation' });
     }
-    const result = await service().createTask(parsed);
+    const result = await service().createTask(parsed, tz);
     res.json(result);
   } catch (err) {
     sendError(res, err);
@@ -179,8 +199,8 @@ app.post('/api/tasks', async (req, res) => {
       await time('buckets', async () => `${(await svc.listBuckets()).length} колонок`);
       await time('bucket по имени', async () => (await svc.resolveTargetBucket()).title);
       await time('доска', async () => {
-        const groups = await svc.listBoard(30);
-        return `${groups.reduce((n, g) => n + g.tasks.length, 0)} задач`;
+        const { groups, stats } = await svc.listBoard(30);
+        return `получено ${stats.received}, открытых ${stats.open}, с колонкой ${stats.resolved} (${stats.source}), групп ${groups.length}`;
       });
       if (config.defaultAssignee) {
         await time('исполнитель', async () => {
@@ -197,9 +217,10 @@ app.post('/api/tasks', async (req, res) => {
   /** Current board: open tasks grouped by column. */
   app.get('/api/board', async (_req, res) => {
     try {
-      const groups = await service().listBoard(50);
+      const { groups, stats } = await service().listBoard(50);
       res.json({
         doneBucket: config.doneBucket,
+        stats,
         groups: groups.map((g) => ({
           bucket: g.bucket.title,
           tasks: g.tasks.map((t) => ({
@@ -256,25 +277,15 @@ app.post('/api/tasks/:id/move', async (req, res) => {
    */
   app.post('/api/tasks/quick', async (req, res) => {
     try {
-      const body = req.body ?? {};
-      const parsed: ParsedTask = {
-        title: String(body.title ?? '').trim(),
-        dueDate: body.dueDate ? String(body.dueDate) : null,
-        estimateMinutes:
-          body.estimateMinutes === null || body.estimateMinutes === undefined
-            ? null
-            : Number(body.estimateMinutes),
-        assignee: body.assignee ? String(body.assignee) : null,
-        bucket: body.bucket ? String(body.bucket) : null,
-        description: body.description ? String(body.description) : null
-      };
+      const { parsed, tz } = readTaskBody((req.body ?? {}) as Record<string, unknown>);
+      const force = Boolean((req.body ?? {}).force);
       if (!parsed.title) {
         return res.status(400).json({ error: 'Укажите название задачи.', kind: 'validation' });
       }
 
       const svc = service();
       const duplicates = await svc.findPossibleDuplicates(parsed.title);
-      if (duplicates.length > 0 && !body.force) {
+      if (duplicates.length > 0 && !force) {
         const decided = await svc.decideBucket(parsed);
         return res.json({
           needsConfirmation: true,
@@ -284,7 +295,7 @@ app.post('/api/tasks/:id/move', async (req, res) => {
         });
       }
 
-      const result = await svc.createTask(parsed);
+      const result = await svc.createTask(parsed, tz);
       res.json({ needsConfirmation: false, result });
     } catch (err) {
       sendError(res, err);

@@ -64,6 +64,10 @@ dd { margin: 0; font-weight: 500; }
 
 .inline-select { width: auto; min-width: 180px; padding: 5px 8px; font-size: 14px; }
 
+.row-fields { display: flex; gap: 12px; }
+.row-fields > div { flex: 1; min-width: 0; }
+input[type="range"] { padding: 0; accent-color: var(--accent); }
+
 .board { margin-top: 14px; }
 .board section { margin-bottom: 18px; }
 .board section:last-child { margin-bottom: 0; }

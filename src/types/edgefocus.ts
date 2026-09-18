@@ -39,6 +39,8 @@ export interface EFTask {
   start_date?: string;
   /** "The estimated time to complete this task, in minutes." */
   time_estimate?: number;
+  /** "Determines how far a task is left from being done" — scale detected at runtime. */
+  percent_done?: number;
   /** Populated only when the task is accessed through a view with buckets. */
   bucket_id?: number;
   /** Per docs.json this is []models.Bucket, present only with expand=buckets. */
@@ -82,15 +84,24 @@ export interface EFCreateTaskPayload {
   title: string;
   project_id: number;
   description?: string;
+  start_date?: string;
   end_date?: string;
   time_estimate?: number;
+  percent_done?: number;
 }
 
 /** Parser output */
 export interface ParsedTask {
   title: string;
-  /** ISO calendar day, e.g. "2026-09-25" */
+  /** ISO calendar day the task ends on, e.g. "2026-09-25" */
   dueDate: string | null;
+  /** ISO calendar day the task starts on. Defaults to dueDate. */
+  startDate?: string | null;
+  /** Local time of day, "HH:MM". */
+  startTime?: string | null;
+  endTime?: string | null;
+  /** 0–100, as a person would say it. */
+  percentDone?: number | null;
   estimateMinutes: number | null;
   assignee: string | null;
   /** Kanban column title. Falls back to EDGEFOCUS_TARGET_BUCKET when null. */
@@ -110,6 +121,10 @@ export interface CreatedTaskResult {
   taskId: number;
   title: string;
   dueDate: string | null;
+  startDate?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  percentDone?: number | null;
   estimateMinutes: number | null;
   bucket: string | null;
   assignees: string[];

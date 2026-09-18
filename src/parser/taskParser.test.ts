@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  dayTimeToRFC3339,
   descriptionToHtml,
   formatEstimate,
   htmlToPlain,
@@ -7,7 +8,8 @@ import {
   parseDateInput,
   parseEstimate,
   parseTaskInput,
-  rfc3339ToIsoDay
+  rfc3339ToIsoDay,
+  rfc3339ToLocalTime
 } from './taskParser.js';
 
 // Fixed "now" so the tests are deterministic: Wed 17 Sep 2026.
@@ -21,7 +23,11 @@ describe('parseTaskInput — примеры из ТЗ', () => {
       estimateMinutes: 120,
       assignee: null,
       bucket: null,
-      description: null
+      description: null,
+      startDate: null,
+      startTime: null,
+      endTime: null,
+      percentDone: null
     });
   });
 
@@ -250,7 +256,11 @@ describe('устойчивость', () => {
       estimateMinutes: null,
       assignee: null,
       bucket: null,
-      description: null
+      description: null,
+      startDate: null,
+      startTime: null,
+      endTime: null,
+      percentDone: null
     });
   });
 
@@ -262,6 +272,86 @@ describe('устойчивость', () => {
     const r = parseTaskInput('Обновить API v2 endpoint', NOW);
     expect(r.title).toBe('Обновить API v2 endpoint');
     expect(r.estimateMinutes).toBeNull();
+  });
+});
+
+describe('время начала и конца', () => {
+  it('«с 10:00 до 18:00»', () => {
+    const r = parseTaskInput('Созвон по проекту, 20 сентября, с 10:00 до 18:00', NOW);
+    expect(r.title).toBe('Созвон по проекту');
+    expect(r.dueDate).toBe('2026-09-20');
+    expect(r.startTime).toBe('10:00');
+    expect(r.endTime).toBe('18:00');
+  });
+
+  it('«10:00-18:30» без предлогов', () => {
+    const r = parseTaskInput('Воркшоп, завтра, 10:00-18:30', NOW);
+    expect(r.startTime).toBe('10:00');
+    expect(r.endTime).toBe('18:30');
+    expect(r.title).toBe('Воркшоп');
+  });
+
+  it('одиночное время — это окончание', () => {
+    const r = parseTaskInput('Ревью макетов, завтра, 14:00, 1h', NOW);
+    expect(r.endTime).toBe('14:00');
+    expect(r.startTime).toBeNull();
+    expect(r.estimateMinutes).toBe(60);
+    expect(r.title).toBe('Ревью макетов');
+  });
+
+  it('диапазон дат «с 18.09 по 25.09»', () => {
+    const r = parseTaskInput('Спринт, с 18.09 по 25.09, 8h', NOW);
+    expect(r.startDate).toBe('2026-09-18');
+    expect(r.dueDate).toBe('2026-09-25');
+    expect(r.title).toBe('Спринт');
+  });
+
+  it('некорректное время игнорируется', () => {
+    const r = parseTaskInput('Задача 99:99, завтра', NOW);
+    expect(r.startTime).toBeNull();
+    expect(r.endTime).toBeNull();
+  });
+
+  it('местное время переводится в UTC по смещению', () => {
+    // UTC+4 -> getTimezoneOffset() === -240
+    expect(dayTimeToRFC3339('2026-09-20', '10:00', -240)).toBe('2026-09-20T06:00:00.000Z');
+    expect(dayTimeToRFC3339('2026-09-20', '18:00', -240)).toBe('2026-09-20T14:00:00.000Z');
+    // и обратно
+    expect(rfc3339ToLocalTime('2026-09-20T06:00:00.000Z', -240)).toBe('10:00');
+  });
+
+  it('без времени используется запасной час', () => {
+    expect(dayTimeToRFC3339('2026-09-20', null, -240, 12)).toBe('2026-09-20T12:00:00.000Z');
+  });
+
+  it('полночь не уезжает на другой день', () => {
+    expect(dayTimeToRFC3339('2026-09-20', '00:30', 0)).toBe('2026-09-20T00:30:00.000Z');
+  });
+});
+
+describe('прогресс', () => {
+  it('«50%»', () => {
+    const r = parseTaskInput('Сделать мобильную версию Overview, 18.09.2026, 6h, 50%', NOW);
+    expect(r.percentDone).toBe(50);
+    expect(r.title).toBe('Сделать мобильную версию Overview');
+    expect(r.estimateMinutes).toBe(360);
+  });
+
+  it('«прогресс 30%» и «готово на 100%»', () => {
+    expect(parseTaskInput('Доделать PWA, 25 сентября, прогресс 30%', NOW).percentDone).toBe(30);
+    expect(parseTaskInput('Встреча, 20.09, готово на 100%', NOW).percentDone).toBe(100);
+  });
+
+  it('progress 75% по-английски', () => {
+    expect(parseTaskInput('Fix select, tomorrow, progress 75%', NOW).percentDone).toBe(75);
+  });
+
+  it('больше 100% не принимается', () => {
+    expect(parseTaskInput('Задача, завтра, 150%', NOW).percentDone).toBeNull();
+  });
+
+  it('без процента — null', () => {
+    expect(parseTaskInput('Задача, завтра, 2h', NOW).percentDone).toBeNull();
   });
 });
 

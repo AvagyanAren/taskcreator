@@ -355,6 +355,103 @@ export function cleanTitle(text: string): string {
 /* Main entry point                                                    */
 /* ------------------------------------------------------------------ */
 
+
+/* ------------------------------------------------------------------ */
+/* Time of day                                                         */
+/* ------------------------------------------------------------------ */
+
+function normalizeTime(hours: string, minutes: string | undefined): string | null {
+  const h = Number(hours);
+  const m = minutes === undefined ? 0 : Number(minutes);
+  if (!Number.isFinite(h) || h < 0 || h > 23) return null;
+  if (!Number.isFinite(m) || m < 0 || m > 59) return null;
+  return `${pad(h)}:${pad(m)}`;
+}
+
+/** "с 10:00 до 18:00", "10:00-18:00", "10:00 — 18:30". */
+export function findTimeRange(text: string): Match<{ start: string; end: string }> | null {
+  const re = new RegExp(
+    `${BS}(?:с|from)?\\s*(\\d{1,2}):(\\d{2})\\s*(?:до|по|-|–|—|to|until)\\s*(\\d{1,2}):(\\d{2})${BE}`,
+    'iu'
+  );
+  const m = re.exec(text);
+  if (!m) return null;
+  const start = normalizeTime(m[1], m[2]);
+  const end = normalizeTime(m[3], m[4]);
+  if (!start || !end) return null;
+  const lead = m[0].length - m[0].trimStart().length;
+  return {
+    value: { start, end },
+    start: m.index + lead,
+    end: m.index + m[0].length,
+    raw: m[0].trim()
+  };
+}
+
+/** A single "в 14:00" / "at 14:30" / bare "14:00". */
+export function findSingleTime(text: string): Match<string> | null {
+  const re = new RegExp(`${BS}(?:в|at|к)?\\s*(\\d{1,2}):(\\d{2})${BE}`, 'iu');
+  const m = re.exec(text);
+  if (!m) return null;
+  const value = normalizeTime(m[1], m[2]);
+  if (!value) return null;
+  const lead = m[0].length - m[0].trimStart().length;
+  return { value, start: m.index + lead, end: m.index + m[0].length, raw: m[0].trim() };
+}
+
+/* ------------------------------------------------------------------ */
+/* Progress                                                            */
+/* ------------------------------------------------------------------ */
+
+/** "50%", "прогресс 50%", "готово на 30%", "progress 75%". */
+export function findProgress(text: string): Match<number> | null {
+  const re = new RegExp(
+    `${BS}(?:прогресс|выполнено|готово(?:\\s+на)?|сделано(?:\\s+на)?|progress|done)?\\s*(\\d{1,3})\\s*%`,
+    'iu'
+  );
+  const m = re.exec(text);
+  if (!m) return null;
+  const value = Number(m[1]);
+  if (!Number.isFinite(value) || value < 0 || value > 100) return null;
+  const lead = m[0].length - m[0].trimStart().length;
+  return { value, start: m.index + lead, end: m.index + m[0].length, raw: m[0].trim() };
+}
+
+/* ------------------------------------------------------------------ */
+/* Date range                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * "с 18.09 по 20.09" / "с 18 сентября до 20 сентября".
+ * Returns both days; the caller removes the whole fragment from the title.
+ */
+export function findDateRange(
+  text: string,
+  now: Date = new Date()
+): Match<{ start: string; end: string }> | null {
+  const opener = new RegExp(`${BS}(?:с|from)${BE}\\s*`, 'iu').exec(text);
+  if (!opener) return null;
+
+  const afterOpener = opener.index + opener[0].length;
+  const first = findDate(text.slice(afterOpener), now);
+  if (!first || first.start > 2) return null;
+
+  const restIndex = afterOpener + first.end;
+  const rest = text.slice(restIndex);
+  const separator = new RegExp(`^\\s*(?:по|до|-|–|—|to|until)\\s*`, 'iu').exec(rest);
+  if (!separator) return null;
+
+  const second = findDate(rest.slice(separator[0].length), now);
+  if (!second || second.start > 2) return null;
+
+  return {
+    value: { start: first.value, end: second.value },
+    start: opener.index,
+    end: restIndex + separator[0].length + second.end,
+    raw: text.slice(opener.index, restIndex + separator[0].length + second.end).trim()
+  };
+}
+
 /**
  * Splits the raw input into "the task line" and "the description".
  * Two ways to write one:
@@ -389,15 +486,33 @@ export function parseTaskInput(input: string, now: Date = new Date()): ParsedTas
   const assignee = findAssignee(rest);
   if (assignee) rest = cutSegment(rest, assignee.start, assignee.end);
 
+  // "%" is unambiguous, so progress is taken out before any number parsing.
+  const progress = findProgress(rest);
+  if (progress) rest = cutSegment(rest, progress.start, progress.end);
+
+  // Times carry a colon, which nothing else in the syntax uses.
+  const timeRange = findTimeRange(rest);
+  if (timeRange) rest = cutSegment(rest, timeRange.start, timeRange.end);
+
   const estimate = findEstimate(rest);
   if (estimate) rest = cutSegment(rest, estimate.start, estimate.end);
 
-  const date = findDate(rest, now);
+  const range = findDateRange(rest, now);
+  if (range) rest = cutSegment(rest, range.start, range.end);
+
+  const date = range ? null : findDate(rest, now);
   if (date) rest = cutSegment(rest, date.start, date.end);
+
+  const singleTime = timeRange ? null : findSingleTime(rest);
+  if (singleTime) rest = cutSegment(rest, singleTime.start, singleTime.end);
 
   return {
     title: cleanTitle(rest),
-    dueDate: date ? date.value : null,
+    dueDate: range ? range.value.end : date ? date.value : null,
+    startDate: range ? range.value.start : null,
+    startTime: timeRange ? timeRange.value.start : null,
+    endTime: timeRange ? timeRange.value.end : singleTime ? singleTime.value : null,
+    percentDone: progress ? progress.value : null,
     estimateMinutes: estimate ? estimate.value : null,
     assignee: assignee ? assignee.value : null,
     bucket: null,
@@ -423,6 +538,39 @@ export function parseDateInput(input: string, now: Date = new Date()): string | 
  */
 export function isoDayToRFC3339(day: string, hourUtc = 12): string {
   return `${day}T${String(hourUtc).padStart(2, '0')}:00:00.000Z`;
+}
+
+/**
+ * Combines a calendar day with a local wall-clock time into RFC3339 UTC.
+ * `tzOffsetMinutes` is what `Date.prototype.getTimezoneOffset()` returns in the
+ * person's browser (UTC+4 → -240), so the time they typed is the time they see.
+ */
+export function dayTimeToRFC3339(
+  day: string,
+  time: string | null | undefined,
+  tzOffsetMinutes = 0,
+  fallbackHourUtc = 12
+): string {
+  if (!time) return isoDayToRFC3339(day, fallbackHourUtc);
+  const [y, mo, d] = day.split('-').map(Number);
+  const [h, mi] = time.split(':').map(Number);
+  if (!y || !mo || !d || !Number.isFinite(h) || !Number.isFinite(mi)) {
+    return isoDayToRFC3339(day, fallbackHourUtc);
+  }
+  const utcMs = Date.UTC(y, mo - 1, d, h, mi) + tzOffsetMinutes * 60_000;
+  return new Date(utcMs).toISOString();
+}
+
+/** Local wall-clock "HH:MM" of an RFC3339 timestamp, for verification. */
+export function rfc3339ToLocalTime(
+  value: string | undefined | null,
+  tzOffsetMinutes = 0
+): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() < 1900) return null;
+  const local = new Date(date.getTime() - tzOffsetMinutes * 60_000);
+  return `${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}`;
 }
 
 /** Extracts the calendar day from an RFC3339 timestamp returned by the API. */

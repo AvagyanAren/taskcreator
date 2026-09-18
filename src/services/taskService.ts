@@ -1,11 +1,12 @@
 import { EdgeFocusClient, EdgeFocusError } from '../api/edgefocus.js';
 import { cached, TTL } from './cache.js';
 import {
+  dayTimeToRFC3339,
   descriptionToHtml,
   formatEstimate,
   htmlToPlain,
-  isoDayToRFC3339,
-  rfc3339ToIsoDay
+  rfc3339ToIsoDay,
+  rfc3339ToLocalTime
 } from '../parser/taskParser.js';
 import type {
   CreatedTaskResult,
@@ -168,11 +169,21 @@ export class TaskService {
   }
 
   /**
-   * Current board contents, grouped by column. `expand=buckets` is what makes
-   * this reliable — plain `bucket_id` is often 0 in list responses.
+   * Current board contents, grouped by column.
+   *
+   * The column of a task is genuinely awkward to read: `bucket_id` is only
+   * filled "when the task is accessed via a view with buckets" and often comes
+   * back as 0, and `expand=buckets` is honoured on a single task but not
+   * always on a list. So this tries the cheap route first and falls back to
+   * per-task lookups for the tasks whose column is still unknown.
    */
-  async listBoard(limit = 100): Promise<Array<{ bucket: EFBucket; tasks: EFTask[] }>> {
-    const [buckets, tasks] = await Promise.all([
+  async listBoard(
+    limit = 50
+  ): Promise<{
+    groups: Array<{ bucket: EFBucket; tasks: EFTask[] }>;
+    stats: { received: number; open: number; resolved: number; source: string };
+  }> {
+    const [buckets, all] = await Promise.all([
       this.listBuckets(),
       this.client.getViewTasks({
         viewId: this.cfg.kanbanViewId,
@@ -181,21 +192,71 @@ export class TaskService {
       })
     ]);
 
-    const byBucket = new Map<number, EFTask[]>();
-    for (const task of tasks) {
-      if (task.done) continue;
+    const open = all.filter((t) => !t.done);
+    const byId = new Map<number, EFBucket>(buckets.map((b) => [b.id, b]));
+
+    const columnOf = (task: EFTask): EFBucket | null => {
       const own = Array.isArray(task.buckets) ? task.buckets : [];
-      const inView = own.find((b) => b.project_view_id === this.cfg.kanbanViewId) ?? own[0];
-      const id = inView?.id ?? task.bucket_id;
-      if (!id) continue;
-      const list = byBucket.get(id) ?? [];
-      list.push(task);
-      byBucket.set(id, list);
+      const inView =
+        own.find((b) => b.project_view_id === this.cfg.kanbanViewId) ?? own[0] ?? null;
+      if (inView?.id && byId.has(inView.id)) return byId.get(inView.id)!;
+      if (inView?.id && inView.title) return inView;
+      if (task.bucket_id && byId.has(task.bucket_id)) return byId.get(task.bucket_id)!;
+      return null;
+    };
+
+    const placed = new Map<number, { task: EFTask; bucket: EFBucket }>();
+    for (const task of open) {
+      const bucket = columnOf(task);
+      if (bucket) placed.set(task.id, { task, bucket });
     }
 
-    return buckets
+    let source = 'list';
+    const unresolved = open.filter((t) => !placed.has(t.id));
+    if (unresolved.length > 0) {
+      // Per-task lookups, capped so this never becomes a slow fan-out.
+      source = placed.size > 0 ? 'list+lookup' : 'lookup';
+      const batch = unresolved.slice(0, 25);
+      const details = await Promise.all(
+        batch.map((t) =>
+          this.client
+            .getTask(t.id, 'buckets')
+            .then((full) => ({ task: t, full }))
+            .catch(() => null)
+        )
+      );
+      for (const entry of details) {
+        if (!entry?.full) continue;
+        const bucket = columnOf({ ...entry.task, ...entry.full });
+        if (bucket) placed.set(entry.task.id, { task: entry.task, bucket });
+      }
+    }
+
+    const byBucket = new Map<number, EFTask[]>();
+    for (const { task, bucket } of placed.values()) {
+      const list = byBucket.get(bucket.id) ?? [];
+      list.push(task);
+      byBucket.set(bucket.id, list);
+    }
+
+    const known = buckets
       .map((bucket) => ({ bucket, tasks: byBucket.get(bucket.id) ?? [] }))
       .filter((group) => group.tasks.length > 0);
+
+    // Tasks whose column stayed unknown are still worth showing.
+    const orphans = open.filter((t) => !placed.has(t.id));
+    const groups =
+      orphans.length > 0
+        ? [
+            ...known,
+            { bucket: { id: -1, title: 'Колонка не определена' } as EFBucket, tasks: orphans }
+          ]
+        : known;
+
+    return {
+      groups,
+      stats: { received: all.length, open: open.length, resolved: placed.size, source }
+    };
   }
 
   /** Finds a task by numeric id or by (partial) title inside the project. */
@@ -294,6 +355,32 @@ export class TaskService {
     return { ok: false, via: null, error };
   }
 
+  /**
+   * `percent_done` is documented only as "determines how far a task is left
+   * from being done", without a scale. EdgeFocus stores it as a fraction
+   * (0.5 = 50%), but rather than trust that, we write the fraction, read the
+   * task back and retry with whole percents if the value did not stick.
+   */
+  static toPercentDisplay(raw: number | null | undefined): number | null {
+    if (raw === null || raw === undefined) return null;
+    if (!Number.isFinite(raw)) return null;
+    return raw <= 1 ? Math.round(raw * 100) : Math.round(raw);
+  }
+
+  async applyProgress(taskId: number, percent: number): Promise<boolean> {
+    const matches = async () => {
+      const fresh = await this.client.getTask(taskId).catch(() => null);
+      return TaskService.toPercentDisplay(fresh?.percent_done ?? null) === Math.round(percent);
+    };
+    if (await matches()) return true;
+    try {
+      await this.client.updateTask(taskId, { percent_done: percent });
+    } catch {
+      return false;
+    }
+    return matches();
+  }
+
   /** Collects assignee candidates without ever throwing. */
   private async candidateUsers(query: string): Promise<EFUser[]> {
     const seen = new Map<number, EFUser>();
@@ -368,7 +455,7 @@ export class TaskService {
   /**
    * Full pipeline: create -> move to bucket -> (optional) assign -> verify.
    */
-  async createTask(parsed: ParsedTask): Promise<CreatedTaskResult> {
+  async createTask(parsed: ParsedTask, tzOffsetMinutes = 0): Promise<CreatedTaskResult> {
     const title = parsed.title.trim();
     if (!title) throw new EdgeFocusError('validation', 'Task title is empty.');
 
@@ -378,11 +465,18 @@ export class TaskService {
     const payload: Record<string, unknown> = { title, project_id: this.cfg.projectId };
     const description = (parsed.description ?? '').trim();
     if (description) payload.description = descriptionToHtml(description);
+    const startDay = parsed.startDate || parsed.dueDate;
     if (parsed.dueDate) {
-      payload.end_date = isoDayToRFC3339(parsed.dueDate);
+      payload.end_date = dayTimeToRFC3339(parsed.dueDate, parsed.endTime, tzOffsetMinutes, 12);
       // EdgeFocus shows a task on the board/Gantt only when it has both ends,
       // so the start date defaults to the same day unless disabled.
-      if (this.cfg.setStartDate) payload.start_date = isoDayToRFC3339(parsed.dueDate, 6);
+      if (this.cfg.setStartDate && startDay) {
+        payload.start_date = dayTimeToRFC3339(startDay, parsed.startTime, tzOffsetMinutes, 6);
+      }
+    }
+    if (parsed.percentDone !== null && parsed.percentDone !== undefined) {
+      // Written as a fraction first; applyProgress() fixes the scale if needed.
+      payload.percent_done = parsed.percentDone / 100;
     }
     if (parsed.estimateMinutes) payload.time_estimate = parsed.estimateMinutes;
     const created = await this.client.createTask(payload as never);
@@ -428,10 +522,20 @@ export class TaskService {
       }
     }
 
+    // 3b. Progress, with scale detection
+    let progressError: string | null = null;
+    if (parsed.percentDone !== null && parsed.percentDone !== undefined) {
+      const ok = await this.applyProgress(created.id, parsed.percentDone);
+      if (!ok) progressError = 'значение не сохранилось';
+    }
+
     // 4. Verify by re-reading the task
     const fresh = await this.client.getTask(created.id);
     const actualDay = rfc3339ToIsoDay(fresh.end_date);
     const actualStartDay = rfc3339ToIsoDay(fresh.start_date);
+    const actualStartTime = rfc3339ToLocalTime(fresh.start_date, tzOffsetMinutes);
+    const actualEndTime = rfc3339ToLocalTime(fresh.end_date, tzOffsetMinutes);
+    const actualPercent = TaskService.toPercentDisplay(fresh.percent_done ?? null);
     const assignees = (await this.readAssignees(created.id)).map((u) => u.username);
 
     const checks: VerificationCheck[] = [
@@ -478,12 +582,41 @@ export class TaskService {
       }
     ];
 
-    if (this.cfg.setStartDate && parsed.dueDate) {
+    if (this.cfg.setStartDate && startDay) {
       checks.splice(3, 0, {
         field: 'Start date',
-        expected: parsed.dueDate,
+        expected: startDay,
         actual: actualStartDay ?? '—',
-        ok: actualStartDay === parsed.dueDate
+        ok: actualStartDay === startDay
+      });
+    }
+
+    if (parsed.startTime) {
+      checks.push({
+        field: 'Начало',
+        expected: parsed.startTime,
+        actual: actualStartTime ?? '—',
+        ok: actualStartTime === parsed.startTime
+      });
+    }
+    if (parsed.endTime) {
+      checks.push({
+        field: 'Окончание',
+        expected: parsed.endTime,
+        actual: actualEndTime ?? '—',
+        ok: actualEndTime === parsed.endTime
+      });
+    }
+    if (parsed.percentDone !== null && parsed.percentDone !== undefined) {
+      checks.push({
+        field: 'Прогресс',
+        expected: `${parsed.percentDone}%`,
+        actual: progressError
+          ? `не удалось: ${progressError}`
+          : actualPercent !== null
+            ? `${actualPercent}%`
+            : '—',
+        ok: !progressError && actualPercent === Math.round(parsed.percentDone)
       });
     }
 
@@ -503,6 +636,10 @@ export class TaskService {
       taskId: created.id,
       title: fresh.title ?? title,
       dueDate: actualDay,
+      startDate: actualStartDay,
+      startTime: actualStartTime,
+      endTime: actualEndTime,
+      percentDone: actualPercent,
       estimateMinutes: fresh.time_estimate ?? null,
       bucket: bucket.title,
       assignees,

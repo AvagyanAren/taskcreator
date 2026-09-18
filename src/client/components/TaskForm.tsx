@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { readDraft, saveDraft } from '../draft.js';
+import { useSpeech } from '../useSpeech.js';
 import { parseTaskInput } from '../../parser/taskParser.js';
 import { ParsePreviewChips } from './ParsePreviewChips.js';
 
@@ -40,6 +41,10 @@ export function TaskForm({
   const [endTime, setEndTime] = useState('');
   const [percentDone, setPercentDone] = useState('');
 
+  const speech = useSpeech((spoken) =>
+    setText((current) => (current.trim() ? `${current.trim()} ${spoken}` : spoken))
+  );
+
   // Persist the draft so a password prompt or a reload never eats the input.
   useEffect(() => {
     saveDraft({ text, title, date, estimate, description, mode });
@@ -71,10 +76,24 @@ export function TaskForm({
             if (text.trim()) onSubmitText(text);
           }}
         >
-          <label htmlFor="nl">Что нужно сделать?</label>
+          <div className="label-row">
+            <label htmlFor="nl">Что нужно сделать?</label>
+            {speech.supported && (
+              <button
+                type="button"
+                className={speech.listening ? 'mic listening' : 'mic'}
+                onClick={speech.toggle}
+                title={speech.listening ? 'Остановить' : 'Надиктовать задачу'}
+                aria-label={speech.listening ? 'Остановить запись' : 'Надиктовать задачу'}
+              >
+                {speech.listening ? '● запись' : '🎤 голосом'}
+              </button>
+            )}
+          </div>
           <textarea
             id="nl"
             rows={3}
+            autoFocus
             value={text}
             placeholder={'Сделать адаптивную версию страницы Business, 25 сентября, 2h\nОписание с новой строки — попадёт в Description'}
             onChange={(e) => setText(e.target.value)}
@@ -85,6 +104,7 @@ export function TaskForm({
               }
             }}
           />
+          {speech.error && <p className="hint warn">{speech.error}</p>}
           <ParsePreviewChips parsed={live} bucket={bucket} />
           <p className="hint">
             Дата и estimate распознаются автоматически: «завтра», «25 сентября», «20.09», «2h»,
@@ -92,6 +112,11 @@ export function TaskForm({
             <br />
             Время — «с 10:00 до 18:00» или «14:00». Прогресс — «50%».
             Диапазон дней — «с 18.09 по 25.09».
+            <br />
+            Метки — «#багфикс», приоритет — «!важно». Несколько задач за раз —
+            разделите строкой «---».
+            <br />
+            Правка существующей: «#249 прогресс 60%», «#249 на 25 сентября, 4h».
             <br />
             Описание — со второй строки (Shift+Enter) или после слова «описание:».
             <br />

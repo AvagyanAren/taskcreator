@@ -9,6 +9,8 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [movingId, setMovingId] = useState<number | null>(null);
+  const [progress, setProgress] = useState<Record<number, number>>({});
+  const [savingId, setSavingId] = useState<number | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
 
   const load = useCallback(async () => {
@@ -28,6 +30,26 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
   useEffect(() => {
     if (open) void load();
   }, [open, load, reloadKey]);
+
+  /** Progress is the field that gets updated most often, so it lives on the card. */
+  const saveProgress = async (taskId: number, percent: number) => {
+    setSavingId(taskId);
+    setError(null);
+    try {
+      await api.updateTask(taskId, {
+        title: '',
+        dueDate: null,
+        estimateMinutes: null,
+        assignee: null,
+        percentDone: percent
+      });
+      await load();
+    } catch (err) {
+      setError((err as ApiError) ?? { error: 'Не удалось сохранить прогресс.' });
+    } finally {
+      setSavingId(null);
+    }
+  };
 
   const complete = async (taskId: number) => {
     setMovingId(taskId);
@@ -86,12 +108,35 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
                   <li key={task.taskId}>
                     <div className="task">
                       <a href={task.url} target="_blank" rel="noreferrer">
+                        {task.number ? `${task.number} ` : ''}
                         {task.title}
                       </a>
                       <span className="meta">
                         {formatDay(task.dueDate ? task.dueDate.slice(0, 10) : null)}
                         {task.estimateMinutes ? ` · ${formatEstimate(task.estimateMinutes)}` : ''}
                       </span>
+                      <div className="progress-cell">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={5}
+                          disabled={savingId === task.taskId}
+                          value={progress[task.taskId] ?? task.percentDone ?? 0}
+                          onChange={(e) =>
+                            setProgress({ ...progress, [task.taskId]: Number(e.target.value) })
+                          }
+                          onMouseUp={(e) => saveProgress(task.taskId, Number(e.currentTarget.value))}
+                          onTouchEnd={(e) => saveProgress(task.taskId, Number(e.currentTarget.value))}
+                          onKeyUp={(e) => saveProgress(task.taskId, Number(e.currentTarget.value))}
+                          aria-label="Прогресс"
+                        />
+                        <span>
+                          {savingId === task.taskId
+                            ? '…'
+                            : `${progress[task.taskId] ?? task.percentDone ?? 0}%`}
+                        </span>
+                      </div>
                     </div>
                     {group.bucket !== doneBucket && (
                       <button

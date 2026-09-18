@@ -13,6 +13,19 @@ export interface EFUser {
   updated?: string;
 }
 
+/** #/definitions/models.Label */
+export interface EFLabel {
+  id: number;
+  title: string;
+  hex_color?: string;
+}
+
+/** #/definitions/models.LabelTask */
+export interface EFLabelTask {
+  label_id: number;
+  created?: string;
+}
+
 /** #/definitions/models.Bucket */
 export interface EFBucket {
   id: number;
@@ -39,6 +52,9 @@ export interface EFTask {
   start_date?: string;
   /** "The estimated time to complete this task, in minutes." */
   time_estimate?: number;
+  /** 0 = unset … 5 = critical (importance axis). */
+  priority?: number;
+  labels?: EFLabel[];
   /** "Determines how far a task is left from being done" — scale detected at runtime. */
   percent_done?: number;
   /** Populated only when the task is accessed through a view with buckets. */
@@ -108,6 +124,10 @@ export interface ParsedTask {
   bucket?: string | null;
   /** Plain-text description; converted to HTML before it reaches the API. */
   description?: string | null;
+  /** Label titles written as #tag. */
+  labels?: string[];
+  /** models.Task.priority: 0 = unset … 5 = critical. */
+  priority?: number | null;
 }
 
 export interface VerificationCheck {

@@ -1,5 +1,5 @@
 import { EdgeFocusClient, EdgeFocusError } from '../api/edgefocus.js';
-import { cached, TTL } from './cache.js';
+import { cached, invalidate, TTL } from './cache.js';
 import {
   dayTimeToRFC3339,
   descriptionToHtml,
@@ -11,6 +11,7 @@ import {
 import type {
   CreatedTaskResult,
   EFBucket,
+  EFLabel,
   EFTask,
   EFUser,
   MovedTaskResult,
@@ -399,6 +400,181 @@ export class TaskService {
     return matches();
   }
 
+  /**
+   * Resolves label titles to ids, creating labels that do not exist yet.
+   * Returns the labels actually attached to the task.
+   */
+  async applyLabels(taskId: number, titles: string[]): Promise<{ applied: string[]; failed: string[] }> {
+    const applied: string[] = [];
+    const failed: string[] = [];
+
+    for (const title of titles) {
+      const wanted = title.trim();
+      if (!wanted) continue;
+      try {
+        const existing = await cached(`labels:${wanted.toLowerCase()}`, TTL.user, () =>
+          this.client.searchLabels(wanted)
+        );
+        let label: EFLabel | undefined = existing.find(
+          (l) => (l.title ?? '').trim().toLowerCase() === wanted.toLowerCase()
+        );
+        if (!label) {
+          label = await this.client.createLabel(wanted);
+          invalidate(`labels:${wanted.toLowerCase()}`);
+        }
+        if (!label?.id) {
+          failed.push(wanted);
+          continue;
+        }
+        await this.client.addTaskLabel(taskId, label.id);
+        applied.push(label.title ?? wanted);
+      } catch {
+        failed.push(wanted);
+      }
+    }
+
+    return { applied, failed };
+  }
+
+  /**
+   * Finds a task the way a person refers to it: "#249" is the number printed
+   * on the card (models.Task.index / identifier), not the API id. Both are
+   * tried, with the project scope enforced either way.
+   */
+  async findByNumber(raw: string): Promise<EFTask[]> {
+    const q = raw.trim().replace(/^#/, '');
+    if (!/^\d+$/.test(q)) return [];
+    const n = Number(q);
+
+    const byId = await this.client
+      .getTask(n)
+      .then((t) => (t?.project_id === this.cfg.projectId ? t : null))
+      .catch(() => null);
+
+    const tasks = await this.client
+      .getViewTasks({ viewId: this.cfg.tableViewId, perPage: 250 })
+      .catch(() => [] as EFTask[]);
+    const byIndex = tasks.filter(
+      (t) => t.index === n || (t.identifier ?? '').replace(/^#/, '') === q
+    );
+
+    // The card number is what the person sees, so it wins when both match.
+    const found = [...byIndex, ...(byId && !byIndex.some((t) => t.id === byId.id) ? [byId] : [])];
+    return found;
+  }
+
+  /** Applies a partial change to an existing task and verifies each field. */
+  async updateExistingTask(
+    taskId: number,
+    patch: ParsedTask,
+    tzOffsetMinutes = 0
+  ): Promise<CreatedTaskResult> {
+    const before = await this.client.getTask(taskId);
+    const payload: Record<string, unknown> = {};
+
+    if (patch.title) payload.title = patch.title;
+    if (patch.description) payload.description = descriptionToHtml(patch.description);
+    if (patch.estimateMinutes !== null && patch.estimateMinutes !== undefined) {
+      payload.time_estimate = patch.estimateMinutes;
+    }
+    if (patch.priority !== null && patch.priority !== undefined) payload.priority = patch.priority;
+    if (patch.dueDate) {
+      payload.end_date = dayTimeToRFC3339(patch.dueDate, patch.endTime, tzOffsetMinutes, 12);
+      if (this.cfg.setStartDate) {
+        const startDay = patch.startDate || patch.dueDate;
+        payload.start_date = dayTimeToRFC3339(startDay, patch.startTime, tzOffsetMinutes, 6);
+      }
+    } else if (patch.endTime || patch.startTime) {
+      // Keep the existing day, change only the time of day.
+      const day = rfc3339ToIsoDay(before.end_date) ?? rfc3339ToIsoDay(before.start_date);
+      if (day) {
+        if (patch.endTime) payload.end_date = dayTimeToRFC3339(day, patch.endTime, tzOffsetMinutes);
+        if (patch.startTime) {
+          payload.start_date = dayTimeToRFC3339(day, patch.startTime, tzOffsetMinutes, 6);
+        }
+      }
+    }
+
+    if (Object.keys(payload).length > 0) await this.client.updateTask(taskId, payload);
+
+    if (patch.percentDone !== null && patch.percentDone !== undefined) {
+      await this.client.updateTask(taskId, { percent_done: patch.percentDone / 100 }).catch(() => {});
+      await this.applyProgress(taskId, patch.percentDone);
+    }
+
+    let labelResult: { applied: string[]; failed: string[] } = { applied: [], failed: [] };
+    if (patch.labels && patch.labels.length > 0) {
+      labelResult = await this.applyLabels(taskId, patch.labels);
+    }
+    if (patch.bucket) {
+      const bucket = await this.resolveTargetBucket(patch.bucket);
+      await this.placeInBucket(taskId, bucket);
+    }
+
+    const fresh = await this.client.getTask(taskId);
+    const actualDay = rfc3339ToIsoDay(fresh.end_date);
+    const actualPercent = TaskService.toPercentDisplay(fresh.percent_done ?? null);
+    const checks: VerificationCheck[] = [];
+
+    if (patch.title) {
+      checks.push({ field: 'Title', expected: patch.title, actual: fresh.title ?? '', ok: fresh.title === patch.title });
+    }
+    if (patch.dueDate) {
+      checks.push({ field: 'Date', expected: patch.dueDate, actual: actualDay ?? '—', ok: actualDay === patch.dueDate });
+    }
+    if (patch.estimateMinutes !== null && patch.estimateMinutes !== undefined) {
+      checks.push({
+        field: 'Estimate',
+        expected: formatEstimate(patch.estimateMinutes),
+        actual: formatEstimate(fresh.time_estimate ?? null),
+        ok: (fresh.time_estimate ?? 0) === patch.estimateMinutes
+      });
+    }
+    if (patch.percentDone !== null && patch.percentDone !== undefined) {
+      checks.push({
+        field: 'Прогресс',
+        expected: `${patch.percentDone}%`,
+        actual: actualPercent !== null ? `${actualPercent}%` : '—',
+        ok: actualPercent === Math.round(patch.percentDone)
+      });
+    }
+    if (patch.priority !== null && patch.priority !== undefined) {
+      checks.push({
+        field: 'Приоритет',
+        expected: String(patch.priority),
+        actual: String(fresh.priority ?? 0),
+        ok: (fresh.priority ?? 0) === patch.priority
+      });
+    }
+    if (patch.labels && patch.labels.length > 0) {
+      const actual = (await this.client.getTaskLabels(taskId).catch(() => [])).map((l) => l.title);
+      checks.push({
+        field: 'Метки',
+        expected: patch.labels.join(', '),
+        actual: actual.join(', ') || (labelResult.failed.length ? `не удалось: ${labelResult.failed.join(', ')}` : '—'),
+        ok: patch.labels.every((t) => actual.some((a) => a.toLowerCase() === t.toLowerCase()))
+      });
+    }
+
+    const bucketNow = await this.readTaskBucket(taskId);
+
+    return {
+      taskId,
+      title: fresh.title ?? '',
+      dueDate: actualDay,
+      startDate: rfc3339ToIsoDay(fresh.start_date),
+      startTime: rfc3339ToLocalTime(fresh.start_date, tzOffsetMinutes),
+      endTime: rfc3339ToLocalTime(fresh.end_date, tzOffsetMinutes),
+      percentDone: actualPercent,
+      estimateMinutes: fresh.time_estimate ?? null,
+      bucket: bucketNow?.title ?? null,
+      assignees: (await this.readAssignees(taskId)).map((u) => u.username),
+      url: this.taskUrl(taskId),
+      verification: checks,
+      verified: checks.every((c) => c.ok)
+    };
+  }
+
   /** Collects assignee candidates without ever throwing. */
   private async candidateUsers(query: string): Promise<EFUser[]> {
     const seen = new Map<number, EFUser>();
@@ -496,6 +672,7 @@ export class TaskService {
       // Written as a fraction first; applyProgress() fixes the scale if needed.
       payload.percent_done = parsed.percentDone / 100;
     }
+    if (parsed.priority !== null && parsed.priority !== undefined) payload.priority = parsed.priority;
     if (parsed.estimateMinutes) payload.time_estimate = parsed.estimateMinutes;
     const created = await this.client.createTask(payload as never);
 
@@ -545,6 +722,12 @@ export class TaskService {
     if (parsed.percentDone !== null && parsed.percentDone !== undefined) {
       const ok = await this.applyProgress(created.id, parsed.percentDone);
       if (!ok) progressError = 'значение не сохранилось';
+    }
+
+    // 3c. Labels, created on demand
+    let labelResult: { applied: string[]; failed: string[] } = { applied: [], failed: [] };
+    if (parsed.labels && parsed.labels.length > 0) {
+      labelResult = await this.applyLabels(created.id, parsed.labels);
     }
 
     // 4. Verify by re-reading the task
@@ -623,6 +806,29 @@ export class TaskService {
         expected: parsed.endTime,
         actual: actualEndTime ?? '—',
         ok: actualEndTime === parsed.endTime
+      });
+    }
+    if (parsed.priority !== null && parsed.priority !== undefined) {
+      checks.push({
+        field: 'Приоритет',
+        expected: String(parsed.priority),
+        actual: String(fresh.priority ?? 0),
+        ok: (fresh.priority ?? 0) === parsed.priority
+      });
+    }
+    if (parsed.labels && parsed.labels.length > 0) {
+      const actualLabels = (await this.client.getTaskLabels(created.id).catch(() => [])).map(
+        (l) => l.title
+      );
+      checks.push({
+        field: 'Метки',
+        expected: parsed.labels.join(', '),
+        actual:
+          actualLabels.join(', ') ||
+          (labelResult.failed.length ? `не удалось: ${labelResult.failed.join(', ')}` : '—'),
+        ok: parsed.labels.every((t) =>
+          actualLabels.some((a) => (a ?? '').toLowerCase() === t.toLowerCase())
+        )
       });
     }
     if (parsed.percentDone !== null && parsed.percentDone !== undefined) {

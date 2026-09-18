@@ -452,6 +452,101 @@ export function findDateRange(
   };
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Editing an existing task                                            */
+/* ------------------------------------------------------------------ */
+
+export interface EditCommand {
+  /** The number printed on the card, e.g. "249". */
+  number: string;
+  patch: ParsedTask;
+}
+
+/**
+ * Recognises "#249 прогресс 60%", "#249 на пятницу, 2h", "249: 80%".
+ * The rest of the line is parsed exactly like a new task, so every field
+ * (date, estimate, time, labels, priority) works the same way here.
+ */
+export function parseEditCommand(input: string, now: Date = new Date()): EditCommand | null {
+  const text = (input ?? '').trim();
+  const head = /^#?(\d{1,7})\s*[:.,-]?\s+(.+)$/s.exec(text);
+  if (!head) return null;
+
+  const rest = head[2].trim();
+  if (!rest) return null;
+
+  const patch = parseTaskInput(rest, now);
+  const touchesSomething =
+    patch.dueDate !== null ||
+    patch.estimateMinutes !== null ||
+    patch.percentDone !== null ||
+    patch.priority !== null ||
+    (patch.labels?.length ?? 0) > 0 ||
+    patch.startTime !== null ||
+    patch.endTime !== null;
+
+  // Without a recognised field this is just a task whose title starts with a
+  // number — creating it is the right call, not editing something.
+  if (!touchesSomething) return null;
+
+  return { number: head[1], patch };
+}
+
+/* ------------------------------------------------------------------ */
+/* Labels and priority                                                 */
+/* ------------------------------------------------------------------ */
+
+/** "#багфикс", "#mobile". Must not swallow a task number like "#249". */
+export function extractLabels(text: string): { labels: string[]; rest: string } {
+  const re = new RegExp(`(?:^|\\s)#([A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_-]*)`, 'gu');
+  const labels: string[] = [];
+  const rest = text.replace(re, (whole, name: string) => {
+    labels.push(name);
+    return whole.startsWith('#') ? '' : ' ';
+  });
+  return { labels, rest };
+}
+
+const PRIORITY_WORDS: Record<string, number> = {
+  низкий: 1, low: 1,
+  средний: 2, medium: 2, normal: 2,
+  высокий: 3, high: 3, важно: 3, important: 3,
+  срочно: 4, urgent: 4,
+  критично: 5, critical: 5, critically: 5
+};
+
+/** "!важно", "!3", "!urgent". Returns 0–5 per models.Task.priority. */
+export function findPriority(text: string): Match<number> | null {
+  const re = new RegExp(
+    `(?:^|\\s)!(\\d|низкий|средний|высокий|важно|срочно|критично|low|medium|normal|high|important|urgent|critical)${BE}`,
+    'iu'
+  );
+  const m = re.exec(text);
+  if (!m) return null;
+  const token = m[1].toLowerCase();
+  const value = /^\d$/.test(token) ? Number(token) : PRIORITY_WORDS[token];
+  if (value === undefined || value < 0 || value > 5) return null;
+  const offset = m[0].indexOf('!');
+  return { value, start: m.index + offset, end: m.index + m[0].length, raw: m[0].trim() };
+}
+
+/* ------------------------------------------------------------------ */
+/* Several tasks at once                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Splits a batch input into separate task blocks. Only an explicit "---" line
+ * separates them: blank lines already mean paragraphs inside a description.
+ */
+export function splitTasks(input: string): string[] {
+  return (input ?? '')
+    .replace(/\r\n/g, '\n')
+    .split(/^\s*-{3,}\s*$/m)
+    .map((block) => block.trim())
+    .filter(Boolean);
+}
+
 /**
  * Splits the raw input into "the task line" and "the description".
  * Two ways to write one:
@@ -482,6 +577,12 @@ export function splitDescription(input: string): { head: string; description: st
 export function parseTaskInput(input: string, now: Date = new Date()): ParsedTask {
   const { head, description } = splitDescription(input);
   let rest = head.replace(/\s+/g, ' ').trim();
+
+  const { labels, rest: withoutLabels } = extractLabels(rest);
+  rest = withoutLabels;
+
+  const priority = findPriority(rest);
+  if (priority) rest = cutSegment(rest, priority.start, priority.end);
 
   const assignee = findAssignee(rest);
   if (assignee) rest = cutSegment(rest, assignee.start, assignee.end);
@@ -515,6 +616,8 @@ export function parseTaskInput(input: string, now: Date = new Date()): ParsedTas
     percentDone: progress ? progress.value : null,
     estimateMinutes: estimate ? estimate.value : null,
     assignee: assignee ? assignee.value : null,
+    labels,
+    priority: priority ? priority.value : null,
     bucket: null,
     description
   };

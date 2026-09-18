@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { api, getPassword, setPassword, type ApiError, type DuplicateCandidate } from './api.js';
 import { appendHistory, readHistory } from './history.js';
 import { clearDraft } from './draft.js';
-import { parseTaskInput } from '../parser/taskParser.js';
+import { parseEditCommand, parseTaskInput, splitTasks } from '../parser/taskParser.js';
+import { Toast } from './components/Toast.js';
 import { PasswordGate } from './components/PasswordGate.js';
 import { TaskForm } from './components/TaskForm.js';
 import { TaskPreview } from './components/TaskPreview.js';
@@ -32,6 +33,9 @@ export default function App() {
   const [gateError, setGateError] = useState<string | null>(null);
   const [boardKey, setBoardKey] = useState(0);
   const [retry, setRetry] = useState<(() => void) | null>(null);
+  const [toast, setToast] = useState<{ message: string; href?: string; tone: 'ok' | 'warn' } | null>(
+    null
+  );
 
   useEffect(() => {
     api.health().then((h) => {
@@ -79,7 +83,89 @@ export default function App() {
    * checks for duplicates and answers `needsConfirmation` instead of creating
    * a second copy — in that case we fall back to the preview screen.
    */
+  /**
+   * "#249 прогресс 60%" edits an existing task instead of creating a new one.
+   * Returns false when the input is not an edit command.
+   */
+  const tryEdit = async (text: string): Promise<boolean> => {
+    const command = parseEditCommand(text);
+    if (!command) return false;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const { tasks } = await api.findTask(command.number);
+      if (tasks.length === 0) {
+        setError({ error: `Задача ${command.number} не найдена в проекте.`, kind: 'not_found' });
+        return true;
+      }
+      if (tasks.length > 1) {
+        setError({
+          error: `Под номером ${command.number} нашлось несколько задач — уточните название.`,
+          kind: 'validation',
+          detail: tasks.map((t) => `${t.number} ${t.title}`).join('\n')
+        });
+        return true;
+      }
+
+      const updated = await api.updateTask(tasks[0].taskId, command.patch);
+      setBoardKey((k) => k + 1);
+      clearDraft();
+      setToast({
+        message: updated.verified
+          ? `Обновлена: ${updated.title}`
+          : `Обновлена, но проверка неполная: ${updated.title}`,
+        href: updated.url,
+        tone: updated.verified ? 'ok' : 'warn'
+      });
+      setResult(updated);
+    } catch (err) {
+      handle(err as ApiError, () => void tryEdit(text));
+    } finally {
+      setBusy(false);
+    }
+    return true;
+  };
+
   const quickCreate = async (text: string) => {
+    if (await tryEdit(text)) return;
+
+    const blocks = splitTasks(text);
+
+    // Several tasks separated by "---" are created in one request.
+    if (blocks.length > 1) {
+      const tasks = blocks
+        .map((block) => {
+          const parsedBlock = parseTaskInput(block);
+          if (!parsedBlock.assignee && defaultAssignee) parsedBlock.assignee = defaultAssignee;
+          return parsedBlock;
+        })
+        .filter((t) => t.title);
+      if (tasks.length === 0) return;
+
+      setBusy(true);
+      setError(null);
+      try {
+        const { results } = await api.batchCreate(tasks);
+        const created = results.filter((r) => r.ok);
+        for (const entry of created) setHistory(appendHistory(entry.result));
+        setBoardKey((k) => k + 1);
+        const failed = results.length - created.length;
+        setToast({
+          message: failed
+            ? `Создано ${created.length} из ${results.length}. Не удалось: ${failed}.`
+            : `Создано задач: ${created.length}`,
+          tone: failed ? 'warn' : 'ok'
+        });
+        if (failed === 0) clearDraft();
+      } catch (err) {
+        handle(err as ApiError, () => void quickCreate(text));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const parsedInput = parseTaskInput(text);
     if (!parsedInput.assignee && defaultAssignee) parsedInput.assignee = defaultAssignee;
     if (!parsedInput.title) return;
@@ -98,11 +184,18 @@ export default function App() {
         setStage('preview');
         return;
       }
-      setResult(res.result);
-      setStage('done');
       setHistory(appendHistory(res.result));
       setBoardKey((k) => k + 1);
       clearDraft();
+      setToast({
+        message: res.result.verified
+          ? `Создана: ${res.result.title}`
+          : `Создана, но проверка неполная: ${res.result.title}`,
+        href: res.result.url,
+        tone: res.result.verified ? 'ok' : 'warn'
+      });
+      setResult(res.result);
+      setStage('form');
     } catch (err) {
       handle(err as ApiError, () => void quickCreate(text));
     } finally {
@@ -194,7 +287,11 @@ export default function App() {
           busy={busy}
           bucket={targetBucket}
           defaultAssignee={defaultAssignee}
-          onSubmitText={(text, quick) => (quick ? quickCreate(text) : runPreview({ text }))}
+          onSubmitText={(text, quick) => {
+            // An edit command goes straight through — there is nothing to preview.
+            if (parseEditCommand(text)) return void quickCreate(text);
+            return quick ? quickCreate(text) : runPreview({ text });
+          }}
           onSubmitStructured={(input) => runPreview(input)}
         />
       )}
@@ -219,6 +316,15 @@ export default function App() {
       )}
 
       {stage === 'done' && result && <TaskResult result={result} onReset={reset} />}
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          href={toast.href}
+          tone={toast.tone}
+          onClose={() => setToast(null)}
+        />
+      )}
 
       <Board doneBucket={doneBucket} reloadKey={boardKey} />
 

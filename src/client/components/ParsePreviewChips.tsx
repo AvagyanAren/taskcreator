@@ -20,6 +20,12 @@ export function ParsePreviewChips({ parsed, bucket }: { parsed: ParsedTask; buck
       {parsed.percentDone !== null && parsed.percentDone !== undefined && (
         <span className="chip">{parsed.percentDone}%</span>
       )}
+      {parsed.priority ? <span className="chip">приоритет {parsed.priority}</span> : null}
+      {(parsed.labels ?? []).map((l) => (
+        <span className="chip" key={l}>
+          #{l}
+        </span>
+      ))}
       {parsed.assignee && <span className="chip">{parsed.assignee}</span>}
       {parsed.description && <span className="chip">описание +</span>}
     </div>

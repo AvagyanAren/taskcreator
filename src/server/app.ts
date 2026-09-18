@@ -20,6 +20,8 @@ function readTaskBody(body: Record<string, unknown>): { parsed: ParsedTask; tz: 
       startTime: body.startTime ? String(body.startTime) : null,
       endTime: body.endTime ? String(body.endTime) : null,
       percentDone: num(body.percentDone),
+      labels: Array.isArray(body.labels) ? body.labels.map((l) => String(l)) : undefined,
+      priority: num(body.priority),
       estimateMinutes: num(body.estimateMinutes),
       assignee: body.assignee ? String(body.assignee) : null,
       bucket: body.bucket ? String(body.bucket) : null,
@@ -225,13 +227,96 @@ app.post('/api/tasks', async (req, res) => {
           bucket: g.bucket.title,
           tasks: g.tasks.map((t) => ({
             taskId: t.id,
+            number: t.identifier || (t.index ? `#${t.index}` : `#${t.id}`),
             title: t.title,
             dueDate: t.end_date ?? null,
             estimateMinutes: t.time_estimate ?? null,
+            percentDone: t.percent_done === undefined || t.percent_done === null
+              ? null
+              : t.percent_done <= 1
+                ? Math.round(t.percent_done * 100)
+                : Math.round(t.percent_done),
             url: `${config.webUrl}/tasks/${t.id}`
           }))
         }))
       });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  /** Look up a task by card number (#249) or title. */
+  app.post('/api/tasks/find', async (req, res) => {
+    try {
+      const query = String(req.body?.query ?? '').trim();
+      if (!query) return res.json({ tasks: [] });
+      const svc = service();
+      const byNumber = /^#?\d+$/.test(query) ? await svc.findByNumber(query) : [];
+      const tasks = byNumber.length > 0 ? byNumber : await svc.findTask(query);
+      res.json({
+        tasks: tasks.map((t) => ({
+          taskId: t.id,
+          number: t.identifier || (t.index ? `#${t.index}` : `#${t.id}`),
+          title: t.title,
+          done: Boolean(t.done),
+          url: `${config.webUrl}/tasks/${t.id}`
+        }))
+      });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  /** Apply a partial change to an existing task. */
+  app.post('/api/tasks/:id/update', async (req, res) => {
+    try {
+      const taskId = Number(req.params.id);
+      if (!Number.isFinite(taskId)) {
+        return res.status(400).json({ error: 'Некорректный ID задачи.', kind: 'validation' });
+      }
+      const { parsed, tz } = readTaskBody((req.body ?? {}) as Record<string, unknown>);
+      res.json(await service().updateExistingTask(taskId, parsed, tz));
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  /** Create several tasks in one go; each result is reported separately. */
+  app.post('/api/tasks/batch', async (req, res) => {
+    try {
+      const items = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+      if (items.length === 0) {
+        return res.status(400).json({ error: 'Список задач пуст.', kind: 'validation' });
+      }
+      if (items.length > 20) {
+        return res
+          .status(400)
+          .json({ error: 'За один раз можно создать не больше 20 задач.', kind: 'validation' });
+      }
+
+      const svc = service();
+      const results: Array<
+        | { ok: true; result: Awaited<ReturnType<TaskService['createTask']>> }
+        | { ok: false; title: string; error: string }
+      > = [];
+
+      // Sequential on purpose: EdgeFocus stays responsive and duplicate
+      // detection sees tasks created moments earlier.
+      for (const item of items) {
+        const { parsed, tz } = readTaskBody(item as Record<string, unknown>);
+        if (!parsed.title) continue;
+        try {
+          results.push({ ok: true, result: await svc.createTask(parsed, tz) });
+        } catch (err) {
+          results.push({
+            ok: false,
+            title: parsed.title,
+            error: err instanceof Error ? err.message : String(err)
+          });
+        }
+      }
+
+      res.json({ results });
     } catch (err) {
       sendError(res, err);
     }

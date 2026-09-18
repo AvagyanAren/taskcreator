@@ -133,6 +133,8 @@ async function get<T>(url: string): Promise<T> {
 
 export interface BoardTask {
   taskId: number;
+  number?: string;
+  percentDone?: number | null;
   title: string;
   dueDate: string | null;
   estimateMinutes: number | null;
@@ -199,6 +201,18 @@ export const api = {
       groups: Array.isArray(data.groups) ? data.groups : [],
       stats: data.stats
     })),
+  batchCreate: (tasks: ParsedTask[]) =>
+    post<{ results: Array<{ ok: true; result: CreatedTaskResult } | { ok: false; title: string; error: string }> }>(
+      '/api/tasks/batch',
+      { tasks: tasks.map(withTz) }
+    ),
+  findTask: (query: string) =>
+    post<{ tasks: Array<{ taskId: number; number: string; title: string; done: boolean; url: string }> }>(
+      '/api/tasks/find',
+      { query }
+    ),
+  updateTask: (taskId: number, patch: ParsedTask) =>
+    post<CreatedTaskResult>(`/api/tasks/${taskId}/update`, withTz(patch)),
   diag: () => get<{ ok: boolean; totalMs: number; steps: unknown[] }>('/api/diag'),
   health: async (): Promise<{
     ok: boolean;

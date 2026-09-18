@@ -1,6 +1,8 @@
 import { loadConfig, loadToken, redact, type AppConfig } from '../config/index.js';
 import type {
   EFBucket,
+  EFLabel,
+  EFLabelTask,
   EFProjectView,
   EFCreateTaskPayload,
   EFTask,
@@ -241,6 +243,27 @@ export class EdgeFocusClient {
   private async list<T>(path: string, opts: RequestOptions = {}): Promise<T[]> {
     const data = await this.request<T[] | null>(path, opts);
     return Array.isArray(data) ? data : [];
+  }
+
+  /** GET /labels?s=... */
+  searchLabels(s: string) {
+    return this.list<EFLabel>(`/labels`, { query: { s, per_page: 50 } });
+  }
+
+  /** PUT /labels — body: models.Label */
+  createLabel(title: string) {
+    return this.request<EFLabel>(`/labels`, { method: 'PUT', body: { title } });
+  }
+
+  /** GET /tasks/{task}/labels */
+  getTaskLabels(taskId: number) {
+    return this.list<EFLabel>(`/tasks/${taskId}/labels`);
+  }
+
+  /** PUT /tasks/{task}/labels — body: models.LabelTask */
+  addTaskLabel(taskId: number, labelId: number) {
+    const body: EFLabelTask = { label_id: labelId };
+    return this.request<unknown>(`/tasks/${taskId}/labels`, { method: 'PUT', body });
   }
 
   /** GET /users?s=... — global search; needs the "Users" token permission. */

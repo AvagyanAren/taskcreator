@@ -8,6 +8,7 @@ import {
   parseDateInput,
   parseEstimate,
   parseTaskInput,
+  splitTasks,
   rfc3339ToIsoDay,
   rfc3339ToLocalTime
 } from './taskParser.js';
@@ -27,7 +28,9 @@ describe('parseTaskInput — примеры из ТЗ', () => {
       startDate: null,
       startTime: null,
       endTime: null,
-      percentDone: null
+      percentDone: null,
+      labels: [],
+      priority: null
     });
   });
 
@@ -260,7 +263,9 @@ describe('устойчивость', () => {
       startDate: null,
       startTime: null,
       endTime: null,
-      percentDone: null
+      percentDone: null,
+      labels: [],
+      priority: null
     });
   });
 
@@ -352,6 +357,53 @@ describe('прогресс', () => {
 
   it('без процента — null', () => {
     expect(parseTaskInput('Задача, завтра, 2h', NOW).percentDone).toBeNull();
+  });
+});
+
+describe('метки и приоритет', () => {
+  it('метки #tag', () => {
+    const r = parseTaskInput('Починить фильтры #багфикс #mobile, завтра, 2h', NOW);
+    expect(r.labels).toEqual(['багфикс', 'mobile']);
+    expect(r.title).toBe('Починить фильтры');
+    expect(r.estimateMinutes).toBe(120);
+  });
+
+  it('приоритет словом и цифрой', () => {
+    expect(parseTaskInput('Задача !важно, завтра', NOW).priority).toBe(3);
+    expect(parseTaskInput('Задача !срочно, завтра', NOW).priority).toBe(4);
+    expect(parseTaskInput('Задача !5, завтра', NOW).priority).toBe(5);
+    expect(parseTaskInput('Задача !low, завтра', NOW).priority).toBe(1);
+  });
+
+  it('номер задачи не считается меткой', () => {
+    const r = parseTaskInput('Доделать #249 по фидбеку, завтра, 1h', NOW);
+    expect(r.labels).toEqual([]);
+  });
+
+  it('без меток и приоритета', () => {
+    const r = parseTaskInput('Обычная задача, завтра, 1h', NOW);
+    expect(r.labels).toEqual([]);
+    expect(r.priority).toBeNull();
+  });
+});
+
+describe('несколько задач за раз', () => {
+  it('разделитель ---', () => {
+    const blocks = splitTasks('Задача 1, завтра, 1h\n---\nЗадача 2, 20.09, 2h\nописание\n---\nЗадача 3, 25.09');
+    expect(blocks).toHaveLength(3);
+    expect(parseTaskInput(blocks[0], NOW).title).toBe('Задача 1');
+    expect(parseTaskInput(blocks[1], NOW).description).toBe('описание');
+    expect(parseTaskInput(blocks[2], NOW).title).toBe('Задача 3');
+  });
+
+  it('без разделителя — одна задача с описанием', () => {
+    const blocks = splitTasks('Задача, завтра, 1h\nописание задачи');
+    expect(blocks).toHaveLength(1);
+  });
+
+  it('пустой ввод', () => {
+    expect(splitTasks('')).toEqual([]);
+    expect(splitTasks('---')).toEqual([]);
   });
 });
 

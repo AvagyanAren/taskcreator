@@ -171,11 +171,12 @@ export class TaskService {
   /**
    * Current board contents, grouped by column.
    *
-   * The column of a task is genuinely awkward to read: `bucket_id` is only
-   * filled "when the task is accessed via a view with buckets" and often comes
-   * back as 0, and `expand=buckets` is honoured on a single task but not
-   * always on a list. So this tries the cheap route first and falls back to
-   * per-task lookups for the tasks whose column is still unknown.
+   * Two shapes have to be handled. A kanban view answers
+   * `/views/{view}/tasks` with the *buckets*, each carrying its own `tasks`
+   * array — so the grouping comes for free. A list/table view answers with a
+   * flat task array, and then the column has to be worked out per task:
+   * `bucket_id` is only filled "when the task is accessed via a view with
+   * buckets" and is often 0, so `expand=buckets` is used as the fallback.
    */
   async listBoard(
     limit = 50
@@ -183,24 +184,53 @@ export class TaskService {
     groups: Array<{ bucket: EFBucket; tasks: EFTask[] }>;
     stats: { received: number; open: number; resolved: number; source: string };
   }> {
-    const [buckets, all] = await Promise.all([
-      this.listBuckets(),
-      this.client.getViewTasks({
-        viewId: this.cfg.kanbanViewId,
-        perPage: limit,
-        expand: 'buckets'
-      })
-    ]);
-
-    const open = all.filter((t) => !t.done);
+    const buckets = await this.listBuckets();
     const byId = new Map<number, EFBucket>(buckets.map((b) => [b.id, b]));
+    const isOpen = (t: EFTask) => t && !t.done;
+
+    // --- shape 1: the kanban view returns buckets with nested tasks ---
+    const raw = (await this.client.getViewTasks({
+      viewId: this.cfg.kanbanViewId,
+      perPage: limit,
+      expand: 'buckets'
+    })) as unknown as Array<Partial<EFBucket & EFTask> & { tasks?: EFTask[] }>;
+
+    const looksLikeBuckets =
+      raw.length > 0 &&
+      raw.every((item) => item && item.project_id === undefined && item.title !== undefined) &&
+      raw.some((item) => Array.isArray(item.tasks) || byId.has(Number(item.id)));
+
+    if (looksLikeBuckets) {
+      const groups = raw
+        .map((item) => {
+          const bucket = byId.get(Number(item.id)) ?? ({ id: Number(item.id), title: String(item.title) } as EFBucket);
+          const tasks = (Array.isArray(item.tasks) ? item.tasks : []).filter(isOpen);
+          return { bucket, tasks };
+        })
+        .filter((group) => group.tasks.length > 0);
+
+      const total = groups.reduce((n, g) => n + g.tasks.length, 0);
+      if (total > 0) {
+        return {
+          groups,
+          stats: { received: raw.length, open: total, resolved: total, source: 'kanban' }
+        };
+      }
+      // Buckets came back without their tasks — fall through to the flat list.
+    }
+
+    // --- shape 2: a flat task list (table view), column resolved per task ---
+    const flat = looksLikeBuckets
+      ? await this.client.getViewTasks({ viewId: this.cfg.tableViewId, perPage: limit })
+      : (raw as unknown as EFTask[]);
+
+    const open = flat.filter(isOpen);
 
     const columnOf = (task: EFTask): EFBucket | null => {
       const own = Array.isArray(task.buckets) ? task.buckets : [];
       const inView =
         own.find((b) => b.project_view_id === this.cfg.kanbanViewId) ?? own[0] ?? null;
       if (inView?.id && byId.has(inView.id)) return byId.get(inView.id)!;
-      if (inView?.id && inView.title) return inView;
       if (task.bucket_id && byId.has(task.bucket_id)) return byId.get(task.bucket_id)!;
       return null;
     };
@@ -211,14 +241,12 @@ export class TaskService {
       if (bucket) placed.set(task.id, { task, bucket });
     }
 
-    let source = 'list';
+    let source = looksLikeBuckets ? 'table' : 'list';
     const unresolved = open.filter((t) => !placed.has(t.id));
     if (unresolved.length > 0) {
-      // Per-task lookups, capped so this never becomes a slow fan-out.
-      source = placed.size > 0 ? 'list+lookup' : 'lookup';
-      const batch = unresolved.slice(0, 25);
+      source += '+lookup';
       const details = await Promise.all(
-        batch.map((t) =>
+        unresolved.slice(0, 25).map((t) =>
           this.client
             .getTask(t.id, 'buckets')
             .then((full) => ({ task: t, full }))
@@ -239,23 +267,13 @@ export class TaskService {
       byBucket.set(bucket.id, list);
     }
 
-    const known = buckets
+    const groups = buckets
       .map((bucket) => ({ bucket, tasks: byBucket.get(bucket.id) ?? [] }))
       .filter((group) => group.tasks.length > 0);
 
-    // Tasks whose column stayed unknown are still worth showing.
-    const orphans = open.filter((t) => !placed.has(t.id));
-    const groups =
-      orphans.length > 0
-        ? [
-            ...known,
-            { bucket: { id: -1, title: 'Колонка не определена' } as EFBucket, tasks: orphans }
-          ]
-        : known;
-
     return {
       groups,
-      stats: { received: all.length, open: open.length, resolved: placed.size, source }
+      stats: { received: flat.length, open: open.length, resolved: placed.size, source }
     };
   }
 

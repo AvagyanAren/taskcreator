@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
- * Web Speech API wrapper built to never leave the UI stuck.
+ * Web Speech API wrapper.
  *
- * Mobile browsers are unreliable here: `onend` may never fire, `stop()` can be
- * ignored, and `start()` throws if a previous session is still alive. So the
- * hook never waits for the engine to confirm anything — state is reset locally
- * and the recognition object is aborted and thrown away.
+ * Two lessons are baked in here:
+ *  - `abort()` throws the result away, `stop()` delivers it — so a manual stop
+ *    must use `stop()`, and `abort()` is only the last-resort escape hatch;
+ *  - phones may never fire `onend`, so the UI state is always reset locally.
+ *
+ * Interim results are accumulated as they arrive, which means whatever was
+ * recognised so far reaches the field even if the session dies unexpectedly.
  */
 type SpeechRecognitionLike = {
   lang: string;
@@ -16,14 +19,20 @@ type SpeechRecognitionLike = {
   start: () => void;
   stop: () => void;
   abort?: () => void;
-  onstart: (() => void) | null;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onresult:
+    | ((event: {
+        resultIndex?: number;
+        results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }>;
+      }) => void)
+    | null;
   onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
 };
 
-/** Hard stop: after this the session is dropped no matter what. */
-const MAX_LISTENING_MS = 20_000;
+/** Hard stop for a session nobody ended. */
+const MAX_LISTENING_MS = 60_000;
+/** How long to wait for the engine's closing result after a manual stop. */
+const FINALIZE_GRACE_MS = 1_500;
 
 function getRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
   if (typeof window === 'undefined') return null;
@@ -34,49 +43,83 @@ function getRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
 
 export function useSpeech(onText: (text: string) => void, lang = 'ru-RU') {
   const [listening, setListening] = useState(false);
+  const [preview, setPreview] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Kept in a ref so the callbacks never go stale between renders.
+  const maxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finalTextRef = useRef('');
+  const interimTextRef = useRef('');
+  const deliveredRef = useRef(false);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
 
   const supported = Boolean(getRecognitionCtor());
 
-  /** Drops the session and clears the state, whatever the engine is doing. */
-  const cleanup = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
+  const clearTimers = () => {
+    if (maxTimerRef.current) clearTimeout(maxTimerRef.current);
+    if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
+    maxTimerRef.current = null;
+    graceTimerRef.current = null;
+  };
+
+  /** Hands over everything recognised so far. Safe to call more than once. */
+  const finalize = useCallback(() => {
+    clearTimers();
     const recognition = recognitionRef.current;
     recognitionRef.current = null;
     if (recognition) {
-      recognition.onstart = null;
       recognition.onresult = null;
       recognition.onerror = null;
       recognition.onend = null;
       try {
         recognition.abort?.();
-        recognition.stop();
       } catch {
-        /* already finished — nothing to do */
+        /* already gone */
       }
     }
+
+    const text = `${finalTextRef.current} ${interimTextRef.current}`.replace(/\s+/g, ' ').trim();
+    if (text && !deliveredRef.current) {
+      deliveredRef.current = true;
+      onTextRef.current(text);
+    }
+
+    finalTextRef.current = '';
+    interimTextRef.current = '';
+    setPreview('');
     setListening(false);
   }, []);
 
-  useEffect(() => cleanup, [cleanup]);
+  useEffect(() => finalize, [finalize]);
 
-  const stop = useCallback(() => cleanup(), [cleanup]);
+  /** User pressed stop: ask the engine to deliver, then finalize regardless. */
+  const stop = useCallback(() => {
+    const recognition = recognitionRef.current;
+    setListening(false);
+    if (!recognition) {
+      finalize();
+      return;
+    }
+    try {
+      recognition.stop();
+    } catch {
+      /* ignore — finalize below handles it */
+    }
+    if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
+    graceTimerRef.current = setTimeout(finalize, FINALIZE_GRACE_MS);
+  }, [finalize]);
 
   const start = useCallback(() => {
     const Ctor = getRecognitionCtor();
     if (!Ctor) return;
 
-    cleanup(); // never start on top of a live session
+    finalize();
     setError(null);
+    deliveredRef.current = false;
+    finalTextRef.current = '';
+    interimTextRef.current = '';
 
     let recognition: SpeechRecognitionLike;
     try {
@@ -87,58 +130,66 @@ export function useSpeech(onText: (text: string) => void, lang = 'ru-RU') {
     }
 
     recognition.lang = lang;
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    // Keep listening through pauses — a task sentence is rarely said in one go.
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event) => {
-      const text = Array.from(
-        { length: event.results.length },
-        (_, i) => event.results[i][0]?.transcript ?? ''
-      )
-        .join(' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (text) onTextRef.current(text);
-      cleanup();
+      let finalText = '';
+      let interim = '';
+      for (let i = 0; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        const transcript = result[0]?.transcript ?? '';
+        if (result.isFinal) finalText += ` ${transcript}`;
+        else interim += ` ${transcript}`;
+      }
+      finalTextRef.current = finalText.replace(/\s+/g, ' ').trim();
+      interimTextRef.current = interim.replace(/\s+/g, ' ').trim();
+      setPreview(`${finalTextRef.current} ${interimTextRef.current}`.trim());
     };
 
     recognition.onerror = (event) => {
       const code = event?.error ?? '';
+      if (code === 'no-speech' && (finalTextRef.current || interimTextRef.current)) {
+        finalize();
+        return;
+      }
       setError(
         code === 'not-allowed' || code === 'service-not-allowed'
           ? 'Нет доступа к микрофону. Разрешите его в настройках браузера.'
           : code === 'no-speech'
             ? 'Речь не распознана — попробуйте ещё раз.'
-            : 'Не удалось распознать речь.'
+            : code === 'aborted'
+              ? null
+              : 'Не удалось распознать речь.'
       );
-      cleanup();
+      finalize();
     };
 
-    recognition.onend = () => cleanup();
+    recognition.onend = () => finalize();
 
     recognitionRef.current = recognition;
     setListening(true);
+    setPreview('');
 
-    // Safety net: some browsers never fire onend, which used to leave the
-    // button stuck in "recording" with no way back.
-    timerRef.current = setTimeout(() => {
+    maxTimerRef.current = setTimeout(() => {
       setError('Запись остановлена автоматически.');
-      cleanup();
+      finalize();
     }, MAX_LISTENING_MS);
 
     try {
       recognition.start();
     } catch {
       setError('Микрофон занят. Попробуйте ещё раз.');
-      cleanup();
+      finalize();
     }
-  }, [cleanup, lang]);
+  }, [finalize, lang]);
 
   const toggle = useCallback(() => {
     if (listening) stop();
     else start();
   }, [listening, start, stop]);
 
-  return { supported, listening, error, toggle, stop };
+  return { supported, listening, error, preview, toggle, stop };
 }

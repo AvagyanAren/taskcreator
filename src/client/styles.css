@@ -182,7 +182,8 @@ a { color: var(--accent); }
   width: 10px; height: 10px; border-radius: 50%; background: var(--err);
   animation: pulse 1.2s ease-in-out infinite; flex: none;
 }
-.recording button { margin-top: 0; margin-left: auto; min-height: 36px; }
+.recording .heard { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.recording button { margin-top: 0; margin-left: auto; min-height: 36px; flex: none; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .recording .dot { animation: none; } }
 .hint.warn { color: var(--warn); }

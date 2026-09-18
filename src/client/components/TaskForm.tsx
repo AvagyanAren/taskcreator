@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { readDraft, saveDraft } from '../draft.js';
 import { useSpeech } from '../useSpeech.js';
+import { normalizeDictation } from '../dictation.js';
 import { parseTaskInput } from '../../parser/taskParser.js';
 import { ParsePreviewChips } from './ParsePreviewChips.js';
 
@@ -41,9 +42,11 @@ export function TaskForm({
   const [endTime, setEndTime] = useState('');
   const [percentDone, setPercentDone] = useState('');
 
-  const speech = useSpeech((spoken) =>
-    setText((current) => (current.trim() ? `${current.trim()} ${spoken}` : spoken))
-  );
+  const speech = useSpeech((spoken) => {
+    // English terms come back transliterated in Cyrillic — put them back.
+    const cleaned = normalizeDictation(spoken);
+    setText((current) => (current.trim() ? `${current.trim()} ${cleaned}` : cleaned));
+  });
 
   // Persist the draft so a password prompt or a reload never eats the input.
   useEffect(() => {
@@ -106,7 +109,7 @@ export function TaskForm({
           {speech.listening && (
             <div className="recording" role="status">
               <span className="dot" aria-hidden="true" />
-              <span>Говорите…</span>
+              <span className="heard">{speech.preview || 'Говорите…'}</span>
               <button type="button" className="ghost small" onClick={speech.stop}>
                 Стоп
               </button>

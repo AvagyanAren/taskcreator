@@ -7,6 +7,7 @@ import {
   isoDayToRFC3339,
   parseDateInput,
   parseEstimate,
+  parseEditCommand,
   parseTaskInput,
   splitTasks,
   rfc3339ToIsoDay,
@@ -311,6 +312,19 @@ describe('время начала и конца', () => {
     expect(r.title).toBe('Спринт');
   });
 
+  it('время без даты означает сегодня', () => {
+    const r = parseTaskInput('Созвон с 10:00 до 18:00', NOW);
+    expect(r.title).toBe('Созвон');
+    expect(r.startTime).toBe('10:00');
+    expect(r.endTime).toBe('18:00');
+    // иначе время распозналось бы и молча потерялось при отправке
+    expect(r.dueDate).toBe('2026-09-17');
+  });
+
+  it('без времени и без даты дата остаётся пустой', () => {
+    expect(parseTaskInput('Просто задача', NOW).dueDate).toBeNull();
+  });
+
   it('некорректное время игнорируется', () => {
     const r = parseTaskInput('Задача 99:99, завтра', NOW);
     expect(r.startTime).toBeNull();
@@ -404,6 +418,54 @@ describe('несколько задач за раз', () => {
   it('пустой ввод', () => {
     expect(splitTasks('')).toEqual([]);
     expect(splitTasks('---')).toEqual([]);
+  });
+});
+
+describe('правка существующей задачи', () => {
+  it('«#249 прогресс 60%»', () => {
+    const c = parseEditCommand('#249 прогресс 60%', NOW);
+    expect(c?.number).toBe('249');
+    expect(c?.patch.percentDone).toBe(60);
+  });
+
+  it('«249: 80%» — двоеточие тоже маркер', () => {
+    expect(parseEditCommand('249: 80%', NOW)?.number).toBe('249');
+  });
+
+  it('«#249 на 25 сентября, 4h»', () => {
+    const c = parseEditCommand('#249 на 25 сентября, 4h', NOW);
+    expect(c?.patch.dueDate).toBe('2026-09-25');
+    expect(c?.patch.estimateMinutes).toBe(240);
+  });
+
+  it('«#249 !срочно #важное»', () => {
+    const c = parseEditCommand('#249 !срочно #важное', NOW);
+    expect(c?.patch.priority).toBe(4);
+    expect(c?.patch.labels).toEqual(['важное']);
+  });
+
+  it('«#249 с 10:00 до 12:00»', () => {
+    const c = parseEditCommand('#249 с 10:00 до 12:00', NOW);
+    expect(c?.patch.startTime).toBe('10:00');
+    expect(c?.patch.endTime).toBe('12:00');
+  });
+
+  // Самое важное: обычная задача, начинающаяся с числа, не должна
+  // случайно отредактировать чужую задачу.
+  it('число в начале названия — это НЕ правка', () => {
+    expect(parseEditCommand('2 задачи по адаптиву, завтра, 1h', NOW)).toBeNull();
+    expect(parseEditCommand('3 страницы Business, 25 сентября, 4h', NOW)).toBeNull();
+    expect(parseEditCommand('5 минут на проверку, завтра', NOW)).toBeNull();
+    expect(parseEditCommand('2026 год планирования, завтра', NOW)).toBeNull();
+  });
+
+  it('номер без изменений — не правка', () => {
+    expect(parseEditCommand('#249', NOW)).toBeNull();
+    expect(parseEditCommand('#249 просто текст', NOW)).toBeNull();
+  });
+
+  it('обычная задача — не правка', () => {
+    expect(parseEditCommand('Обычная задача, завтра, 2h', NOW)).toBeNull();
   });
 });
 

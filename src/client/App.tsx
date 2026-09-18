@@ -141,7 +141,10 @@ export default function App() {
           return parsedBlock;
         })
         .filter((t) => t.title);
-      if (tasks.length === 0) return;
+      if (tasks.length === 0) {
+        setError({ error: 'Ни в одном блоке не распознано название задачи.', kind: 'validation' });
+        return;
+      }
 
       setBusy(true);
       setError(null);
@@ -168,7 +171,13 @@ export default function App() {
 
     const parsedInput = parseTaskInput(text);
     if (!parsedInput.assignee && defaultAssignee) parsedInput.assignee = defaultAssignee;
-    if (!parsedInput.title) return;
+    if (!parsedInput.title) {
+      setError({
+        error: 'Не удалось понять название задачи — в строке только дата и оценка.',
+        kind: 'validation'
+      });
+      return;
+    }
 
     setBusy(true);
     setError(null);

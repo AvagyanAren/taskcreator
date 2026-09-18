@@ -465,15 +465,18 @@ export interface EditCommand {
 
 /**
  * Recognises "#249 прогресс 60%", "#249 на пятницу, 2h", "249: 80%".
- * The rest of the line is parsed exactly like a new task, so every field
- * (date, estimate, time, labels, priority) works the same way here.
+ *
+ * The number must be marked as a reference — either "#249" or "249:". A bare
+ * leading number is part of a normal title ("2 задачи по адаптиву, завтра"),
+ * and editing a random task instead of creating one would be a bad surprise.
  */
 export function parseEditCommand(input: string, now: Date = new Date()): EditCommand | null {
   const text = (input ?? '').trim();
-  const head = /^#?(\d{1,7})\s*[:.,-]?\s+(.+)$/s.exec(text);
+  const head = /^(?:#(\d{1,7})|(\d{1,7})\s*[:—–-])\s*(.+)$/s.exec(text);
   if (!head) return null;
 
-  const rest = head[2].trim();
+  const number = head[1] ?? head[2];
+  const rest = (head[3] ?? '').trim();
   if (!rest) return null;
 
   const patch = parseTaskInput(rest, now);
@@ -490,7 +493,7 @@ export function parseEditCommand(input: string, now: Date = new Date()): EditCom
   // number — creating it is the right call, not editing something.
   if (!touchesSomething) return null;
 
-  return { number: head[1], patch };
+  return { number, patch };
 }
 
 /* ------------------------------------------------------------------ */
@@ -607,9 +610,15 @@ export function parseTaskInput(input: string, now: Date = new Date()): ParsedTas
   const singleTime = timeRange ? null : findSingleTime(rest);
   if (singleTime) rest = cutSegment(rest, singleTime.start, singleTime.end);
 
+  // "Созвон с 10:00 до 18:00" without a day means today — otherwise the time
+  // would be parsed and then silently dropped for lack of a date.
+  const explicitDay = range ? range.value.end : date ? date.value : null;
+  const hasTime = Boolean(timeRange || singleTime);
+  const dueDate = explicitDay ?? (hasTime ? isoOf(startOfDay(now)) : null);
+
   return {
     title: cleanTitle(rest),
-    dueDate: range ? range.value.end : date ? date.value : null,
+    dueDate,
     startDate: range ? range.value.start : null,
     startTime: timeRange ? timeRange.value.start : null,
     endTime: timeRange ? timeRange.value.end : singleTime ? singleTime.value : null,

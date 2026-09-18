@@ -44,7 +44,20 @@ function sendError(res: express.Response, err: unknown) {
 /** Builds the Express app. Used by the local server and by the Vercel function. */
 export function createApp() {
   const app = express();
-  app.use(express.json());
+
+  /**
+   * Vercel's Node runtime already consumes the request stream and hands over a
+   * parsed `req.body`. Running express.json() on top of that would wait for a
+   * stream that will never emit again, so the request hangs until the function
+   * times out. Locally there is no pre-parsed body and the parser runs as usual.
+   */
+  const jsonParser = express.json({ limit: '1mb' });
+  app.use((req, res, next) => {
+    const pre = (req as express.Request & { body?: unknown }).body;
+    if (pre !== undefined && pre !== null) return next();
+    jsonParser(req, res, next);
+  });
+
   app.use(requirePassword);
 
 app.get('/api/health', (_req, res) => {
@@ -142,10 +155,48 @@ app.post('/api/tasks', async (req, res) => {
 });
 
 /** Search existing tasks by id or title. */
+  /** Diagnostics: is EdgeFocus reachable, and how slow is it? */
+  app.get('/api/diag', async (_req, res) => {
+    const steps: Array<{ step: string; ms: number; ok: boolean; info?: string }> = [];
+    const time = async (step: string, fn: () => Promise<string>) => {
+      const started = Date.now();
+      try {
+        const info = await fn();
+        steps.push({ step, ms: Date.now() - started, ok: true, info });
+      } catch (err) {
+        steps.push({
+          step,
+          ms: Date.now() - started,
+          ok: false,
+          info: err instanceof Error ? err.message : String(err)
+        });
+      }
+    };
+
+    try {
+      const svc = service();
+      await time('buckets', async () => `${(await svc.listBuckets()).length} колонок`);
+      await time('bucket по имени', async () => (await svc.resolveTargetBucket()).title);
+      await time('доска', async () => {
+        const groups = await svc.listBoard(30);
+        return `${groups.reduce((n, g) => n + g.tasks.length, 0)} задач`;
+      });
+      if (config.defaultAssignee) {
+        await time('исполнитель', async () => {
+          const { user } = await svc.resolveAssigneeDetailed(config.defaultAssignee);
+          return user ? user.username : 'не найден';
+        });
+      }
+      res.json({ ok: steps.every((s) => s.ok), totalMs: steps.reduce((n, s) => n + s.ms, 0), steps });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
   /** Current board: open tasks grouped by column. */
   app.get('/api/board', async (_req, res) => {
     try {
-      const groups = await service().listBoard();
+      const groups = await service().listBoard(50);
       res.json({
         doneBucket: config.doneBucket,
         groups: groups.map((g) => ({

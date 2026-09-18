@@ -34,11 +34,86 @@ async function post<T>(url: string, body: unknown): Promise<T> {
       headers: { 'Content-Type': 'application/json', 'x-app-password': getPassword() },
       body: JSON.stringify(body)
     });
-  } catch {
-    throw { error: 'Не удалось связаться с локальным сервером. Он запущен?' } as ApiError;
+  } catch (err) {
+    // Real transport failure: offline, DNS, or the request never completed.
+    throw {
+      error: navigator.onLine
+        ? 'Сервер не ответил. Попробуйте ещё раз через несколько секунд.'
+        : 'Нет соединения с интернетом.',
+      kind: 'network',
+      detail: `${url}: ${err instanceof Error ? err.message : String(err)}`
+    } as ApiError;
   }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw data as ApiError;
+
+  const text = await res.text().catch(() => '');
+  let data: unknown = undefined;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = undefined;
+    }
+  }
+
+  if (!res.ok) {
+    if (data && typeof data === 'object') throw data as ApiError;
+    // Vercel returns an HTML error page for timeouts and crashes.
+    throw {
+      error:
+        res.status === 504
+          ? 'Запрос к EdgeFocus занял слишком много времени.'
+          : `Сервер вернул ошибку ${res.status}.`,
+      kind: 'server',
+      detail: `${url} -> ${res.status}\n${text.slice(0, 500)}`
+    } as ApiError;
+  }
+
+  if (data === undefined) {
+    throw {
+      error: 'Сервер вернул неожиданный ответ.',
+      kind: 'server',
+      detail: `${url} -> ${res.status}\n${text.slice(0, 500)}`
+    } as ApiError;
+  }
+
+  return data as T;
+}
+
+/** GET with the same error handling as post(). */
+async function get<T>(url: string): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { 'x-app-password': getPassword() } });
+  } catch (err) {
+    throw {
+      error: navigator.onLine
+        ? 'Сервер не ответил. Попробуйте ещё раз через несколько секунд.'
+        : 'Нет соединения с интернетом.',
+      kind: 'network',
+      detail: `${url}: ${err instanceof Error ? err.message : String(err)}`
+    } as ApiError;
+  }
+  const text = await res.text().catch(() => '');
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    data = undefined;
+  }
+  if (!res.ok) {
+    if (data && typeof data === 'object') throw data as ApiError;
+    throw {
+      error:
+        res.status === 504
+          ? 'Запрос к EdgeFocus занял слишком много времени.'
+          : `Сервер вернул ошибку ${res.status}.`,
+      kind: 'server',
+      detail: `${url} -> ${res.status}\n${text.slice(0, 500)}`
+    } as ApiError;
+  }
+  if (data === undefined) {
+    throw { error: 'Сервер вернул неожиданный ответ.', kind: 'server', detail: `${url} -> ${res.status}` } as ApiError;
+  }
   return data as T;
 }
 
@@ -94,11 +169,10 @@ export const api = {
       | { needsConfirmation: false; result: CreatedTaskResult }
     >('/api/tasks/quick', { ...parsed, force }),
   board: async (): Promise<BoardGroup[]> => {
-    const res = await fetch('/api/board', { headers: { 'x-app-password': getPassword() } });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data?.groups) ? data.groups : [];
+    const data = await get<{ groups?: BoardGroup[] }>('/api/board');
+    return Array.isArray(data.groups) ? data.groups : [];
   },
+  diag: () => get<{ ok: boolean; totalMs: number; steps: unknown[] }>('/api/diag'),
   health: async (): Promise<{
     ok: boolean;
     passwordRequired: boolean;

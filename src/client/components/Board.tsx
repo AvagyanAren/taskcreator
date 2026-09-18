@@ -8,7 +8,7 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [movingId, setMovingId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -16,7 +16,7 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
     try {
       setGroups(await api.board());
     } catch (err) {
-      setError((err as ApiError)?.error ?? 'Не удалось загрузить доску.');
+      setError((err as ApiError) ?? { error: 'Не удалось загрузить доску.' });
     } finally {
       setLoading(false);
     }
@@ -33,7 +33,7 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
       await api.moveTask(taskId, doneBucket);
       await load();
     } catch (err) {
-      setError((err as ApiError)?.error ?? 'Не удалось перенести задачу.');
+      setError((err as ApiError) ?? { error: 'Не удалось перенести задачу.' });
     } finally {
       setMovingId(null);
     }
@@ -50,7 +50,17 @@ export function Board({ doneBucket, reloadKey }: { doneBucket: string; reloadKey
       {open && (
         <div className="board">
           {loading && <p className="hint">Загружаю…</p>}
-          {error && <div className="banner error">{error}</div>}
+          {error && (
+            <div className="banner error">
+              <strong>{error.error}</strong>
+              {error.detail && (
+                <details>
+                  <summary>Technical details</summary>
+                  <pre>{error.detail}</pre>
+                </details>
+              )}
+            </div>
+          )}
           {!loading && !error && groups.length === 0 && <p className="hint">Открытых задач нет.</p>}
 
           {groups.map((group) => (
